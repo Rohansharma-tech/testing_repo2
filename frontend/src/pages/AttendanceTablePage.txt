@@ -132,42 +132,6 @@ function FilterPill({ label, onRemove }) {
   );
 }
 
-// ─── User Avatar ──────────────────────────────────────────────────────────────
-
-function UserAvatar({ record, size = "lg" }) {
-  const sizeClasses = {
-    sm: "h-10 w-10 text-sm",
-    md: "h-12 w-12 text-base",
-    lg: "h-16 w-16 text-xl",
-    xl: "h-20 w-20 text-2xl",
-  };
-  const base = `${sizeClasses[size]} flex-shrink-0 rounded-full object-cover`;
-
-  const initials = record.userName
-    ? record.userName.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase()
-    : "?";
-
-  const src = record.userProfileImage ? `/${record.userProfileImage}` : null;
-  const [broken, setBroken] = useState(false);
-
-  if (src && !broken) {
-    return (
-      <img
-        src={src}
-        alt={record.userName}
-        className={`${base} border border-slate-200 shadow-sm`}
-        onError={() => setBroken(true)}
-      />
-    );
-  }
-
-  return (
-    <div className={`${base} flex items-center justify-center bg-blue-600 font-semibold text-white shadow-sm`}>
-      {initials}
-    </div>
-  );
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function AttendanceTablePage() {
@@ -398,32 +362,29 @@ export default function AttendanceTablePage() {
               filteredRecords.map((record) => (
                 <div key={record.id} className="rounded-2xl border border-slate-200 p-4">
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                    <div className="flex items-start gap-3">
-                      <UserAvatar record={record} />
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">{record.userName}</p>
-                        <p className="mt-1 text-sm text-slate-500">{record.userEmail}</p>
-                        {record.userDepartment && (
-                          <p className="mt-1 text-xs text-slate-400">
-                            Dept: <span className="font-medium text-slate-600">{record.userDepartment}</span>
-                          </p>
-                        )}
-                        <div className="mt-3 grid gap-2 text-sm text-slate-500 sm:grid-cols-2">
-                          <p>Date: {record.date}</p>
-                          <p>Time: {record.time || "--:--"}</p>
-                          <p>
-                            Coordinates:{" "}
-                            {record.latitude !== null && record.longitude !== null
-                              ? `${record.latitude.toFixed(5)}, ${record.longitude.toFixed(5)}`
-                              : "Not available"}
-                          </p>
-                          <p>
-                            Accuracy:{" "}
-                            {record.locationAccuracy !== null && record.locationAccuracy !== undefined
-                              ? `${Math.round(record.locationAccuracy)} m`
-                              : "Not available"}
-                          </p>
-                        </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{record.userName}</p>
+                      <p className="mt-1 text-sm text-slate-500">{record.userEmail}</p>
+                      {record.userDepartment && (
+                        <p className="mt-1 text-xs text-slate-400">
+                          Dept: <span className="font-medium text-slate-600">{record.userDepartment}</span>
+                        </p>
+                      )}
+                      <div className="mt-3 grid gap-2 text-sm text-slate-500 sm:grid-cols-2">
+                        <p>Date: {record.date}</p>
+                        <p>Time: {record.time || "--:--"}</p>
+                        <p>
+                          Coordinates:{" "}
+                          {record.latitude !== null && record.longitude !== null
+                            ? `${record.latitude.toFixed(5)}, ${record.longitude.toFixed(5)}`
+                            : "Not available"}
+                        </p>
+                        <p>
+                          Accuracy:{" "}
+                          {record.locationAccuracy !== null && record.locationAccuracy !== undefined
+                            ? `${Math.round(record.locationAccuracy)} m`
+                            : "Not available"}
+                        </p>
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-2">

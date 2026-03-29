@@ -1,8 +1,11 @@
 // src/context/AuthContext.jsx — Global Authentication State
+// Uses React Context to share login state across all components
+// without prop-drilling
 
 import { createContext, useContext, useState, useEffect } from "react";
 import api from "../api/axios";
 
+// Create the context
 const AuthContext = createContext(null);
 
 function readStoredUser() {
@@ -15,22 +18,11 @@ function readStoredUser() {
   }
 }
 
-/** Normalize the raw API response into the shape the app expects. */
-function normalizeUser(data) {
-  return {
-    id: data.id || data._id,
-    name: data.name,
-    email: data.email,
-    role: data.role,
-    hasFace: data.hasFace,
-    profileImage: data.profileImage ?? null,       // relative DB path or null
-    profileImageUrl: data.profileImageUrl ?? null, // absolute URL returned by API
-  };
-}
-
+// ---- AuthProvider Component ----
+// Wrap the entire app with this to share auth state everywhere
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true); // Prevent flash before checking token
 
   useEffect(() => {
     let isMounted = true;
@@ -40,49 +32,76 @@ export function AuthProvider({ children }) {
       const token = localStorage.getItem("token");
 
       if (!token) {
-        if (isMounted) setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
         return;
       }
 
-      if (storedUser && isMounted) setUser(storedUser);
+      if (storedUser && isMounted) {
+        setUser(storedUser);
+      }
 
       try {
         const res = await api.get("/auth/me");
-        const normalized = normalizeUser(res.data);
-        localStorage.setItem("user", JSON.stringify(normalized));
-        if (isMounted) setUser(normalized);
+        const normalizedUser = {
+          id: res.data.id || res.data._id,
+          name: res.data.name,
+          email: res.data.email,
+          role: res.data.role,
+          hasFace: res.data.hasFace,
+        };
+
+        localStorage.setItem("user", JSON.stringify(normalizedUser));
+
+        if (isMounted) {
+          setUser(normalizedUser);
+        }
       } catch {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
-        if (isMounted) setUser(null);
+
+        if (isMounted) {
+          setUser(null);
+        }
       } finally {
-        if (isMounted) setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     }
 
     restoreSession();
-    return () => { isMounted = false; };
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
+  // ---- Login Function ----
   const login = async (email, password) => {
     const res = await api.post("/auth/login", { email, password });
     const { token, user: userData } = res.data;
-    const normalized = normalizeUser(userData);
+
+    // Save to localStorage so session persists on page refresh
     localStorage.setItem("token", token);
-    localStorage.setItem("user", JSON.stringify(normalized));
-    setUser(normalized);
-    return normalized;
+    localStorage.setItem("user", JSON.stringify(userData));
+
+    setUser(userData);
+    return userData;
   };
 
+  // ---- Logout Function ----
   const logout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     setUser(null);
   };
 
+  // ---- Update User State (e.g., after face registration) ----
   const updateUser = (updates) => {
-    setUser((current) => {
-      const updated = { ...current, ...updates };
+    setUser((currentUser) => {
+      const updated = { ...currentUser, ...updates };
       localStorage.setItem("user", JSON.stringify(updated));
       return updated;
     });
@@ -95,6 +114,7 @@ export function AuthProvider({ children }) {
   );
 }
 
+// Custom hook for easy access to auth context
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used inside AuthProvider");

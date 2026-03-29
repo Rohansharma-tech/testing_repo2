@@ -18,83 +18,23 @@ function normalizeFaceDescriptor(faceDescriptor) {
   if (!Array.isArray(faceDescriptor) || faceDescriptor.length !== 128) {
     return null;
   }
+
   const normalized = faceDescriptor.map((value) => Number(value));
   return normalized.every((value) => Number.isFinite(value)) ? normalized : null;
 }
 
 // ---- GET /api/settings/geofence ----
-// Returns the *active* geofence config (DB override wins over .env)
-router.get("/geofence", protect, async (req, res) => {
-  try {
-    const settings = await OrganizationSettings.getSingleton();
-    const geofence = getGeofenceConfig(settings);
+router.get("/geofence", protect, (req, res) => {
+  const geofence = getGeofenceConfig();
 
-    return res.json({
-      latitude: geofence.latitude,
-      longitude: geofence.longitude,
-      radius: geofence.radius,
-      maxAccuracyMeters: geofence.maxAccuracyMeters,
-      maxLocationAgeMs: geofence.maxLocationAgeMs,
-      timeZone: geofence.timeZone,
-      source: geofence.source,
-    });
-  } catch (err) {
-    return res.status(500).json({ message: "Failed to fetch geofence config." });
-  }
-});
-
-// ---- GET /api/settings/geofence-db ----
-// Returns only the DB-stored geofence values (null fields = not set yet)
-router.get("/geofence-db", protect, adminOnly, async (req, res) => {
-  try {
-    const settings = await OrganizationSettings.getSingleton();
-    return res.json({
-      latitude: settings.geofenceLatitude,
-      longitude: settings.geofenceLongitude,
-      radius: settings.geofenceRadius,
-      updatedAt: settings.updatedAt,
-    });
-  } catch (err) {
-    return res.status(500).json({ message: "Failed to fetch DB geofence." });
-  }
-});
-
-// ---- PUT /api/settings/geofence-db ----
-// Saves lat/lng/radius to DB; takes effect immediately for all future requests.
-router.put("/geofence-db", protect, adminOnly, async (req, res) => {
-  const latitude = Number(req.body.latitude);
-  const longitude = Number(req.body.longitude);
-  const radius = Number(req.body.radius);
-
-  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
-    return res.status(400).json({ message: "latitude must be a number between -90 and 90." });
-  }
-  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
-    return res.status(400).json({ message: "longitude must be a number between -180 and 180." });
-  }
-  if (!Number.isFinite(radius) || radius <= 0) {
-    return res.status(400).json({ message: "radius must be a positive number (metres)." });
-  }
-
-  try {
-    const settings = await OrganizationSettings.getSingleton();
-    settings.geofenceLatitude = latitude;
-    settings.geofenceLongitude = longitude;
-    settings.geofenceRadius = radius;
-    settings.lastUpdatedBy = req.user.id;
-    await settings.save();
-
-    return res.json({
-      message: "Geofence location saved and active.",
-      latitude: settings.geofenceLatitude,
-      longitude: settings.geofenceLongitude,
-      radius: settings.geofenceRadius,
-      updatedAt: settings.updatedAt,
-    });
-  } catch (err) {
-    console.error("Save geofence error:", err);
-    return res.status(500).json({ message: "Failed to save geofence location." });
-  }
+  res.json({
+    latitude: geofence.latitude,
+    longitude: geofence.longitude,
+    radius: geofence.radius,
+    maxAccuracyMeters: geofence.maxAccuracyMeters,
+    maxLocationAgeMs: geofence.maxLocationAgeMs,
+    timeZone: geofence.timeZone,
+  });
 });
 
 // ---- GET /api/settings/face-descriptor ----
@@ -110,7 +50,10 @@ router.get("/face-descriptor", protect, async (req, res) => {
       return res.status(400).json({ message: "No face registered. Please register your face first." });
     }
 
-    return res.json({ faceDescriptor: user.faceDescriptor, name: user.name });
+    return res.json({
+      faceDescriptor: user.faceDescriptor,
+      name: user.name,
+    });
   } catch (err) {
     return res.status(500).json({ message: "Failed to fetch face data." });
   }
@@ -137,8 +80,11 @@ router.put("/register-face", protect, async (req, res) => {
 
     await User.findByIdAndUpdate(
       req.user.id,
-      { faceDescriptor, hasFace: true },
-      { runValidators: true },
+      {
+        faceDescriptor,
+        hasFace: true,
+      },
+      { runValidators: true }
     );
 
     return res.json({ message: "Face registered successfully." });
@@ -152,6 +98,7 @@ router.put("/register-face", protect, async (req, res) => {
 // =============================================================
 
 // ---- GET /api/settings/cutoff ----
+// Returns current cutoff configuration
 router.get("/cutoff", protect, adminOnly, async (req, res) => {
   try {
     const settings = await OrganizationSettings.getSingleton();
@@ -168,25 +115,29 @@ router.get("/cutoff", protect, adminOnly, async (req, res) => {
 });
 
 // ---- PUT /api/settings/cutoff ----
+// Set or update the cutoff time. Reschedules the cron job immediately.
 router.put("/cutoff", protect, adminOnly, async (req, res) => {
   const { cutoffTime, cutoffTimeZone, cutoffEnabled } = req.body;
 
+  // Validate cutoffTime format
   if (!cutoffTime || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(cutoffTime)) {
     return res.status(400).json({
       message: "cutoffTime is required and must be in HH:MM 24-hour format (e.g. '09:30').",
     });
   }
 
-  const shouldEnable = cutoffEnabled !== false;
+  const shouldEnable = cutoffEnabled !== false; // default true when setting a time
 
   try {
     const settings = await OrganizationSettings.getSingleton();
+
     settings.cutoffTime = cutoffTime;
     if (cutoffTimeZone) settings.cutoffTimeZone = cutoffTimeZone;
     settings.cutoffEnabled = shouldEnable;
     settings.lastUpdatedBy = req.user.id;
     await settings.save();
 
+    // Reschedule in-process job
     if (shouldEnable) {
       scheduleCutoffJob(settings.cutoffTime, settings.cutoffTimeZone);
     } else {
@@ -207,6 +158,7 @@ router.put("/cutoff", protect, adminOnly, async (req, res) => {
 });
 
 // ---- DELETE /api/settings/cutoff ----
+// Disables the auto-absent job (keeps the stored time for reference)
 router.delete("/cutoff", protect, adminOnly, async (req, res) => {
   try {
     const settings = await OrganizationSettings.getSingleton();

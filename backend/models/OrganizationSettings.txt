@@ -14,7 +14,7 @@ const organizationSettingsSchema = new mongoose.Schema(
       immutable: true,
     },
 
-    // ── Cutoff ────────────────────────────────────────────────────────────────
+    // Cutoff time in "HH:MM" 24-hour format (e.g. "09:30")
     cutoffTime: {
       type: String,
       default: null,
@@ -26,33 +26,20 @@ const organizationSettingsSchema = new mongoose.Schema(
         message: "cutoffTime must be in HH:MM 24-hour format (e.g. '09:30').",
       },
     },
+
+    // IANA timezone string (e.g. "Asia/Kolkata")
     cutoffTimeZone: {
       type: String,
       default: process.env.APP_TIMEZONE || "Asia/Kolkata",
     },
+
+    // Whether the auto-absent job is active
     cutoffEnabled: {
       type: Boolean,
       default: false,
     },
 
-    // ── Geofence (DB-stored override) ─────────────────────────────────────────
-    // When present, these values override the GEOFENCE_LAT / GEOFENCE_LNG /
-    // GEOFENCE_RADIUS environment variables at runtime.
-    // When null, the system falls back to .env (fully backward-compatible).
-    geofenceLatitude: {
-      type: Number,
-      default: null,
-    },
-    geofenceLongitude: {
-      type: Number,
-      default: null,
-    },
-    geofenceRadius: {
-      type: Number,
-      default: null,
-    },
-
-    // Metadata
+    // Metadata — who last updated this
     lastUpdatedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

@@ -38,6 +38,7 @@ function serializeAttendanceRecord(record) {
     userName: populatedUser ? record.userId.name : undefined,
     userEmail: populatedUser ? record.userId.email : undefined,
     userDepartment: populatedUser ? (record.userId.department || null) : undefined, // ✅ FIX 2
+    userProfileImage: populatedUser ? (record.userId.profileImage || null) : undefined,
     date: record.date,
     time: record.time,
     latitude: record.latitude,
@@ -283,7 +284,7 @@ router.get("/today", async (req, res) => {
 router.get("/all", adminOnly, async (req, res) => {
   try {
     const records = await Attendance.find()
-      .populate("userId", "name email department") // ✅ FIX 1: added "department"
+      .populate("userId", "name email department profileImage") // ✅ FIX 1: added "department" and "profileImage"
       .sort({ date: -1, createdAt: -1 });
 
     return res.json(records.map((r) => serializeAttendanceRecord(r)));

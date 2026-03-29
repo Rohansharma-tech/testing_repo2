@@ -6,35 +6,35 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const path = require("path");
 
-// Load environment variables from .env file
 dotenv.config();
 
 const app = express();
 
 // ---- Middleware ----
-// Allow requests from the React frontend (port 5173 by default with Vite)
 app.use(cors({ origin: "*" }));
+app.use(express.json({ limit: "10mb" }));
 
-// Parse incoming JSON request bodies
-app.use(express.json({ limit: "10mb" })); // 10mb limit for face descriptor payloads
+// ── Static file serving for uploaded profile images ───────────────────────────
+// Files stored in  backend/uploads/  are reachable at  GET /uploads/<filename>
+// e.g.  GET /uploads/profiles/64abc123_1710000000000.jpg
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ---- Routes ----
-// Import route handlers
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/users");
 const attendanceRoutes = require("./routes/attendance");
 const settingsRoutes = require("./routes/settings");
 const { initCutoffScheduler } = require("./services/autoCutoffScheduler");
 
-// Mount routes at their base paths
-app.use("/api/auth", authRoutes);         // Login, register
-app.use("/api/users", userRoutes);        // User management (admin)
-app.use("/api/attendance", attendanceRoutes); // Mark & view attendance
-app.use("/api/settings", settingsRoutes); // Geofence settings
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/attendance", attendanceRoutes);
+app.use("/api/settings", settingsRoutes);
 
-// ---- Health Check Route ----
-app.get("/", (req, res) => {
+// ---- Health Check ----
+app.get("/", (_req, res) => {
   res.json({ message: "Attendance System API is running ✅" });
 });
 
@@ -46,16 +46,13 @@ mongoose
   .connect(MONGO_URI)
   .then(async () => {
     console.log("✅ Connected to MongoDB");
-
-    // Auto-create a default admin user if none exists
     await createDefaultAdmin();
-
-    // Start the auto-absent cutoff scheduler if configured
     await initCutoffScheduler();
 
     app.listen(PORT, () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
-      console.log(`📍 Geofence: ${process.env.GEOFENCE_LAT}, ${process.env.GEOFENCE_LNG} (${process.env.GEOFENCE_RADIUS}m radius)`);
+      console.log(`📁 Profile uploads served at http://localhost:${PORT}/uploads/profiles/`);
+      console.log(`📍 Geofence (.env): ${process.env.GEOFENCE_LAT}, ${process.env.GEOFENCE_LNG} (${process.env.GEOFENCE_RADIUS}m radius)`);
     });
   })
   .catch((err) => {
@@ -64,7 +61,6 @@ mongoose
   });
 
 // ---- Default Admin Creator ----
-// Creates an admin account on first run so you can log in immediately
 async function createDefaultAdmin() {
   const User = require("./models/User");
   const bcrypt = require("bcryptjs");

@@ -1,50 +1,16 @@
-// src/pages/UserManagementPage.jsx
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import api from "../api/axios";
 import PageWrapper from "../components/PageWrapper";
 import { useToast } from "../components/Toast";
 
-// ─── Avatar helper ────────────────────────────────────────────────────────────
-
-function UserAvatar({ user, size = "md" }) {
-  const sizeClasses = { sm: "h-8 w-8 text-xs", md: "h-10 w-10 text-sm" };
-  const base = `${sizeClasses[size]} flex-shrink-0 rounded-full object-cover`;
-
-  const initials = user.name
-    ? user.name.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase()
-    : "?";
-
-  const src = user.profileImageUrl || (user.profileImage ? `/${user.profileImage}` : null);
-
-  const [broken, setBroken] = useState(false);
-
-  if (src && !broken) {
-    return (
-      <img
-        src={src}
-        alt={user.name}
-        className={`${base} border border-slate-200`}
-        onError={() => setBroken(true)}
-      />
-    );
-  }
-
-  return (
-    <div className={`${base} flex items-center justify-center bg-blue-600 font-semibold text-white`}>
-      {initials}
-    </div>
-  );
-}
-
-// ─── Department dropdown ──────────────────────────────────────────────────────
-
+// ─── Custom department dropdown ───────────────────────────────────────────────
 function DepartmentDropdown({ departments, value, onChange, onAddDepartment, placeholder = "Select a department" }) {
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
   const ref = useRef(null);
 
+  // Close on outside click
   useEffect(() => {
     function handleClick(e) {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false);
@@ -65,19 +31,27 @@ function DepartmentDropdown({ departments, value, onChange, onAddDepartment, pla
 
   return (
     <div ref={ref} className="relative">
+      {/* Trigger */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="input-field flex w-full items-center justify-between text-left"
       >
-        <span className={value ? "text-slate-900" : "text-slate-400"}>{value || placeholder}</span>
-        <svg className={`h-4 w-4 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <span className={value ? "text-slate-900" : "text-slate-400"}>
+          {value || placeholder}
+        </span>
+        <svg
+          className={`h-4 w-4 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+        >
           <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
         </svg>
       </button>
 
+      {/* Panel */}
       {open && (
         <div className="absolute z-50 mt-1 w-full rounded-2xl border border-slate-200 bg-white shadow-lg">
+          {/* Existing options */}
           <ul className="max-h-48 overflow-y-auto py-1">
             {departments.length === 0 && (
               <li className="px-4 py-3 text-sm text-slate-400">No departments yet. Add one below.</li>
@@ -87,14 +61,20 @@ function DepartmentDropdown({ departments, value, onChange, onAddDepartment, pla
                 <button
                   type="button"
                   onClick={() => { onChange(dept); setOpen(false); }}
-                  className={`w-full px-4 py-2.5 text-left text-sm hover:bg-slate-50 ${value === dept ? "font-semibold text-blue-700" : "text-slate-700"}`}
+                  className={`w-full px-4 py-2.5 text-left text-sm hover:bg-slate-50 ${
+                    value === dept ? "font-semibold text-blue-700" : "text-slate-700"
+                  }`}
                 >
                   {dept}
                 </button>
               </li>
             ))}
           </ul>
+
+          {/* Divider */}
           <div className="border-t border-slate-100" />
+
+          {/* Add department row */}
           <div className="p-2">
             {adding ? (
               <div className="flex items-center gap-2">
@@ -133,28 +113,22 @@ function DepartmentDropdown({ departments, value, onChange, onAddDepartment, pla
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
-
-const EMPTY_FORM = { name: "", email: "", password: "", role: "user", department: "" };
-
 export default function UserManagementPage() {
   const [users, setUsers] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [photoFile, setPhotoFile] = useState(null);       // File object
-  const [photoPreview, setPhotoPreview] = useState(null); // Object URL for preview
+  const [form, setForm] = useState({ name: "", email: "", password: "", role: "user", department: "" });
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [groupByDepartment, setGroupByDepartment] = useState(false);
-  const photoInputRef = useRef(null);
   const { showToast, ToastContainer } = useToast();
 
   const fetchUsers = async () => {
     try {
       const res = await api.get("/users");
       setUsers(res.data);
-    } catch {
+    } catch (err) {
       showToast("Failed to load users.", "error");
     } finally {
       setLoading(false);
@@ -167,7 +141,7 @@ export default function UserManagementPage() {
       const names = res.data.map((d) => (typeof d === "string" ? d : d.name));
       setDepartments(names);
     } catch {
-      // Non-fatal — fall back to deriving from users
+      // Fallback: derive from users
     }
   };
 
@@ -175,11 +149,6 @@ export default function UserManagementPage() {
     fetchDepartments();
     fetchUsers();
   }, []);
-
-  // Cleanup object URL when component unmounts or photo changes
-  useEffect(() => {
-    return () => { if (photoPreview) URL.revokeObjectURL(photoPreview); };
-  }, [photoPreview]);
 
   const allDepartments = useMemo(() => {
     const fromUsers = users.map((u) => u.department).filter(Boolean);
@@ -189,42 +158,19 @@ export default function UserManagementPage() {
   const handleAddDepartment = async (name) => {
     if (allDepartments.includes(name)) return;
     setDepartments((prev) => [...prev, name].sort());
-    try { await api.post("/departments", { name }); } catch { /* non-fatal */ }
-  };
-
-  const handlePhotoChange = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setPhotoFile(file);
-    setPhotoPreview(URL.createObjectURL(file));
-  };
-
-  const handleRemovePhoto = () => {
-    setPhotoFile(null);
-    if (photoPreview) URL.revokeObjectURL(photoPreview);
-    setPhotoPreview(null);
-    if (photoInputRef.current) photoInputRef.current.value = "";
+    try {
+      await api.post("/departments", { name });
+    } catch {
+      // Non-fatal
+    }
   };
 
   const handleCreate = async (event) => {
     event.preventDefault();
     setSubmitting(true);
     try {
-      // Use FormData so we can attach the optional photo alongside the text fields
-      const data = new FormData();
-      data.append("name", form.name);
-      data.append("email", form.email);
-      data.append("password", form.password);
-      data.append("role", form.role);
-      if (form.department) data.append("department", form.department);
-      if (photoFile) data.append("profileImage", photoFile);
-
-      await api.post("/users", data, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-
-      setForm(EMPTY_FORM);
-      handleRemovePhoto();
+      await api.post("/users", form);
+      setForm({ name: "", email: "", password: "", role: "user", department: "" });
       setShowForm(false);
       showToast("User created successfully.", "success");
       fetchUsers();
@@ -263,34 +209,28 @@ export default function UserManagementPage() {
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [filteredUsers, groupByDepartment]);
 
-  // ── UserCard ────────────────────────────────────────────────────────────────
   const UserCard = ({ user }) => (
     <div className="rounded-2xl border border-slate-200 p-4">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-start gap-3">
-          <UserAvatar user={user} size="md" />
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold text-slate-900">{user.name}</p>
-              <span className={user.role === "admin" ? "status-chip status-chip-info" : "status-chip status-chip-neutral"}>
-                {user.role === "admin" ? "Admin" : "Employee"}
-              </span>
-              <span className={user.hasFace ? "status-chip status-chip-success" : "status-chip status-chip-warning"}>
-                {user.hasFace ? "Face Registered" : "Face Pending"}
-              </span>
-            </div>
-            <p className="mt-1.5 text-sm text-slate-500">{user.email}</p>
-            {user.department && (
-              <p className="mt-1 text-xs text-slate-400">
-                Dept: <span className="font-medium text-slate-600">{user.department}</span>
-              </p>
-            )}
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-slate-900">{user.name}</p>
+            <span className={user.role === "admin" ? "status-chip status-chip-info" : "status-chip status-chip-neutral"}>
+              {user.role === "admin" ? "Admin" : "Employee"}
+            </span>
+            <span className={user.hasFace ? "status-chip status-chip-success" : "status-chip status-chip-warning"}>
+              {user.hasFace ? "Face Registered" : "Face Pending"}
+            </span>
           </div>
+          <p className="mt-2 text-sm text-slate-500">{user.email}</p>
+          {user.department && (
+            <p className="mt-1 text-xs text-slate-400">
+              Dept: <span className="font-medium text-slate-600">{user.department}</span>
+            </p>
+          )}
         </div>
         {user.role !== "admin" && (
-          <button onClick={() => handleDelete(user._id, user.name)} className="btn-danger">
-            Delete
-          </button>
+          <button onClick={() => handleDelete(user._id, user.name)} className="btn-danger">Delete</button>
         )}
       </div>
     </div>
@@ -333,50 +273,6 @@ export default function UserManagementPage() {
             <div className="card">
               <p className="section-label">Create User</p>
               <form onSubmit={handleCreate} className="mt-5 space-y-4">
-                {/* ── Profile photo picker ── */}
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">
-                    Profile photo <span className="text-slate-400 font-normal">(optional)</span>
-                  </label>
-                  <div className="flex items-center gap-4">
-                    {/* Preview circle */}
-                    <div className="h-16 w-16 flex-shrink-0 overflow-hidden rounded-full border-2 border-dashed border-slate-300 bg-slate-50">
-                      {photoPreview ? (
-                        <img src={photoPreview} alt="Preview" className="h-full w-full rounded-full object-cover" />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-slate-300">
-                          <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
-                          </svg>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Buttons */}
-                    <div className="flex flex-col gap-2">
-                      <button
-                        type="button"
-                        onClick={() => photoInputRef.current?.click()}
-                        className="btn-secondary text-sm"
-                      >
-                        {photoPreview ? "Change photo" : "Upload photo"}
-                      </button>
-                      {photoPreview && (
-                        <button type="button" onClick={handleRemovePhoto} className="text-xs text-red-500 hover:underline text-left">
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <input
-                    ref={photoInputRef}
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp,image/gif"
-                    className="hidden"
-                    onChange={handlePhotoChange}
-                  />
-                </div>
-
                 <div>
                   <label className="mb-2 block text-sm font-medium text-slate-700">Full name</label>
                   <input className="input-field" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Employee name" required />
@@ -424,7 +320,11 @@ export default function UserManagementPage() {
           </div>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
-            <select className="input-field flex-1" value={departmentFilter} onChange={(e) => setDepartmentFilter(e.target.value)}>
+            <select
+              className="input-field flex-1"
+              value={departmentFilter}
+              onChange={(e) => setDepartmentFilter(e.target.value)}
+            >
               <option value="all">All departments</option>
               {allDepartments.map((dept) => (
                 <option key={dept} value={dept}>{dept}</option>
@@ -445,13 +345,8 @@ export default function UserManagementPage() {
             {loading ? (
               [1, 2, 3].map((item) => (
                 <div key={item} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 animate-pulse rounded-full bg-slate-200" />
-                    <div>
-                      <div className="h-4 w-40 animate-pulse rounded bg-slate-200" />
-                      <div className="mt-2 h-3 w-28 animate-pulse rounded bg-slate-200" />
-                    </div>
-                  </div>
+                  <div className="h-4 w-40 animate-pulse rounded bg-slate-200" />
+                  <div className="mt-3 h-3 w-28 animate-pulse rounded bg-slate-200" />
                 </div>
               ))
             ) : filteredUsers.length === 0 ? (

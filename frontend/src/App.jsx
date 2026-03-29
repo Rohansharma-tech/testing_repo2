@@ -1,4 +1,5 @@
 // src/App.jsx — Main App with React Router Setup
+
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 
@@ -12,6 +13,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import UserManagementPage from "./pages/UserManagementPage";
 import AttendanceTablePage from "./pages/AttendanceTablePage";
 import CutoffSettingsPage from "./pages/CutoffSettingsPage";
+import LocationSettingsPage from "./pages/Locationsettingpage";
 
 // ---- Protected Route Wrapper ----
 function ProtectedRoute({ children, adminOnly = false }) {
@@ -19,7 +21,7 @@ function ProtectedRoute({ children, adminOnly = false }) {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100">
+      <div className="flex min-h-screen items-center justify-center bg-slate-100">
         <div className="text-center">
           <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-blue-600 border-t-transparent" />
           <p className="text-sm font-medium text-slate-500">Loading workspace...</p>
@@ -43,14 +45,21 @@ function AppRoutes() {
         path="/login"
         element={user ? <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace /> : <LoginPage />}
       />
-      <Route path="/dashboard" element={<ProtectedRoute><UserDashboard /></ProtectedRoute>} />
+
+      {/* ── User routes ── */}
+      <Route path="/dashboard"       element={<ProtectedRoute><UserDashboard /></ProtectedRoute>} />
       <Route path="/mark-attendance" element={<ProtectedRoute><MarkAttendancePage /></ProtectedRoute>} />
-      <Route path="/register-face" element={<ProtectedRoute><RegisterFacePage /></ProtectedRoute>} />
-      <Route path="/my-attendance" element={<ProtectedRoute><MyAttendancePage /></ProtectedRoute>} />
-      <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
-      <Route path="/admin/users" element={<ProtectedRoute adminOnly><UserManagementPage /></ProtectedRoute>} />
-      <Route path="/admin/attendance" element={<ProtectedRoute adminOnly><AttendanceTablePage /></ProtectedRoute>} />
-      <Route path="/admin/settings" element={<ProtectedRoute adminOnly><CutoffSettingsPage /></ProtectedRoute>} />
+      <Route path="/register-face"   element={<ProtectedRoute><RegisterFacePage /></ProtectedRoute>} />
+      <Route path="/my-attendance"   element={<ProtectedRoute><MyAttendancePage /></ProtectedRoute>} />
+
+      {/* ── Admin routes ── */}
+      <Route path="/admin"             element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
+      <Route path="/admin/users"       element={<ProtectedRoute adminOnly><UserManagementPage /></ProtectedRoute>} />
+      <Route path="/admin/attendance"  element={<ProtectedRoute adminOnly><AttendanceTablePage /></ProtectedRoute>} />
+      <Route path="/admin/settings"    element={<ProtectedRoute adminOnly><CutoffSettingsPage /></ProtectedRoute>} />
+      <Route path="/admin/location"    element={<ProtectedRoute adminOnly><LocationSettingsPage /></ProtectedRoute>} />
+
+      {/* ── Fallbacks ── */}
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>

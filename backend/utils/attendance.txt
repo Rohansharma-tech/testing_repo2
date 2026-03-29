@@ -17,6 +17,7 @@ function toNumber(value) {
   if (value === null || value === undefined || value === "") {
     return null;
   }
+
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -64,37 +65,14 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
   return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-/**
- * Returns the active geofence configuration.
- *
- * Priority order:
- *   1. dbOverride — values saved via PUT /api/settings/geofence-db (passed in by the caller)
- *   2. .env variables — GEOFENCE_LAT, GEOFENCE_LNG, GEOFENCE_RADIUS (fallback)
- *
- * The dbOverride object is optional. When provided it should have the shape:
- *   { geofenceLatitude, geofenceLongitude, geofenceRadius }
- * (i.e. the raw fields from the OrganizationSettings document).
- */
-function getGeofenceConfig(dbOverride = null) {
-  // Prefer DB values when they are all valid numbers
-  const dbLat = dbOverride ? toNumber(dbOverride.geofenceLatitude) : null;
-  const dbLng = dbOverride ? toNumber(dbOverride.geofenceLongitude) : null;
-  const dbRadius = dbOverride ? toNumber(dbOverride.geofenceRadius) : null;
-
-  const hasDbGeofence =
-    dbLat !== null && dbLng !== null && dbRadius !== null;
-
-  const latitude = hasDbGeofence ? dbLat : toNumber(process.env.GEOFENCE_LAT);
-  const longitude = hasDbGeofence ? dbLng : toNumber(process.env.GEOFENCE_LNG);
-  const radius = hasDbGeofence ? dbRadius : toNumber(process.env.GEOFENCE_RADIUS);
-
+function getGeofenceConfig() {
+  const latitude = toNumber(process.env.GEOFENCE_LAT);
+  const longitude = toNumber(process.env.GEOFENCE_LNG);
+  const radius = toNumber(process.env.GEOFENCE_RADIUS);
   const maxAccuracyMeters =
     toNumber(process.env.MAX_LOCATION_ACCURACY_METERS) ??
     Math.max(radius || 0, 120);
-  const maxLocationAgeMs = Number.parseInt(
-    process.env.MAX_LOCATION_AGE_MS || "120000",
-    10,
-  );
+  const maxLocationAgeMs = Number.parseInt(process.env.MAX_LOCATION_AGE_MS || "120000", 10);
 
   return {
     latitude,
@@ -103,7 +81,6 @@ function getGeofenceConfig(dbOverride = null) {
     maxAccuracyMeters,
     maxLocationAgeMs: Number.isFinite(maxLocationAgeMs) ? maxLocationAgeMs : 120000,
     timeZone: DEFAULT_TIMEZONE,
-    source: hasDbGeofence ? "db" : "env",  // helpful for debugging
   };
 }
 
@@ -173,6 +150,7 @@ function validateLocationPayload(payload = {}, config = getGeofenceConfig()) {
 
   if (capturedAt) {
     const ageMs = Date.now() - capturedAt.getTime();
+
     if (ageMs > config.maxLocationAgeMs || ageMs < -30000) {
       return {
         ok: false,
@@ -185,7 +163,13 @@ function validateLocationPayload(payload = {}, config = getGeofenceConfig()) {
 
   return {
     ok: true,
-    location: { latitude, longitude, accuracy, mocked, capturedAt },
+    location: {
+      latitude,
+      longitude,
+      accuracy,
+      mocked,
+      capturedAt,
+    },
   };
 }
 

@@ -5,6 +5,50 @@ import { AttendanceReasonBadge, AttendanceStatusBadge } from "../components/Atte
 import PageWrapper from "../components/PageWrapper";
 import { ATTENDANCE_STATUS } from "../utils/attendance";
 
+// ─── User Avatar ──────────────────────────────────────────────────────────────
+
+function UserAvatar({ source, size = "md" }) {
+  // Increased base sizes: sm is now 10, md is 12, lg is 16, xl is 20
+  const sizeClasses = {
+    sm: "h-10 w-10 text-sm",
+    md: "h-12 w-12 text-base",
+    lg: "h-16 w-16 text-xl",
+    xl: "h-20 w-20 text-2xl",
+  };
+  const base = `${sizeClasses[size]} flex-shrink-0 rounded-full object-cover`;
+
+  // Handle both user object formats (users vs attendance records)
+  const name = source?.name || source?.userName || "?";
+  let initials = "?";
+  if (name !== "?") {
+    initials = name.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  }
+
+  // Handle path from either direct user profileImage or record.userProfileImage
+  const rawPath = source?.profileImageUrl || source?.profileImage || source?.userProfileImage;
+  const src = rawPath?.startsWith("/") ? rawPath : (rawPath ? `/${rawPath}` : null);
+  
+  const [broken, setBroken] = useState(false);
+
+  if (src && !broken) {
+    return (
+      <img
+        src={src}
+        alt={name}
+        className={`${base} border border-slate-200 shadow-sm`}
+        onError={() => setBroken(true)}
+      />
+    );
+  }
+
+  return (
+    <div className={`${base} flex items-center justify-center bg-blue-600 font-semibold text-white shadow-sm`}>
+      {initials}
+    </div>
+  );
+}
+
+
 function formatFriendlyDate(date) {
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", {
     weekday: "long",
@@ -64,6 +108,8 @@ export default function AdminDashboard() {
           email: user.email,
           hasFace: user.hasFace,
           department: user.department || null,
+          profileImage: user.profileImage,
+          profileImageUrl: user.profileImageUrl,
           status: record?.status || ATTENDANCE_STATUS.NOT_MARKED,
           reason: record?.reason || null,
           time: record?.time || null,
@@ -177,41 +223,45 @@ export default function AdminDashboard() {
               ) : (
                 filteredWorkforce.map((employee) => (
                   <div key={employee.id} className="rounded-2xl border border-slate-200 p-4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">{employee.name}</p>
-                        <p className="mt-1 text-sm text-slate-500">{employee.email}</p>
-                        {employee.department && (
-                          <p className="mt-1 text-xs text-slate-400">
-                            {employee.department}
-                          </p>
-                        )}
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <AttendanceStatusBadge status={employee.status} />
-                          <AttendanceReasonBadge reason={employee.reason} />
-                          <span
-                            className={
-                              employee.hasFace
-                                ? "status-chip status-chip-success"
-                                : "status-chip status-chip-warning"
-                            }
-                          >
-                            {employee.hasFace ? "Face Registered" : "Face Missing"}
-                          </span>
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                      
+                      <div className="flex items-center gap-4">
+                        <UserAvatar source={employee} size="lg" />
+                        <div>
+                          <p className="text-base font-semibold text-slate-900">{employee.name}</p>
+                          <p className="mt-0.5 text-sm text-slate-500">{employee.email}</p>
+                          {employee.department && (
+                            <p className="mt-1 text-xs text-slate-400">
+                              {employee.department}
+                            </p>
+                          )}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <AttendanceStatusBadge status={employee.status} />
+                            <AttendanceReasonBadge reason={employee.reason} />
+                            <span
+                              className={
+                                employee.hasFace
+                                  ? "status-chip status-chip-success"
+                                  : "status-chip status-chip-warning"
+                              }
+                            >
+                              {employee.hasFace ? "Face Registered" : "Face Missing"}
+                            </span>
+                          </div>
                         </div>
                       </div>
-
-                      <div className="text-sm text-slate-500 lg:text-right">
+                      
+                      <div className="mt-3 text-sm text-slate-500 lg:mt-0 lg:text-right">
                         <p>
                           {employee.time
                             ? `Last event at ${employee.time}`
                             : "No attendance event today"}
                         </p>
-                        {employee.distanceMeters !== null &&
-                          employee.distanceMeters !== undefined && (
-                            <p className="mt-1">Distance: {employee.distanceMeters} m</p>
-                          )}
+                        {employee.distanceMeters !== null && employee.distanceMeters !== undefined && (
+                          <p className="mt-1">Distance: {employee.distanceMeters} m</p>
+                        )}
                       </div>
+
                     </div>
                   </div>
                 ))
@@ -252,10 +302,13 @@ export default function AdminDashboard() {
                 ) : (
                   latestEvents.map((record) => (
                     <div key={record.id} className="rounded-2xl border border-slate-200 p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">{record.userName}</p>
-                          <p className="mt-1 text-sm text-slate-500">{record.userEmail}</p>
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-center gap-3">
+                          <UserAvatar source={record} size="md" />
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">{record.userName}</p>
+                            <p className="mt-0.5 text-sm text-slate-500">{record.userEmail}</p>
+                          </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <AttendanceStatusBadge status={record.status} />

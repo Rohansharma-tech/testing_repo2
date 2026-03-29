@@ -27,17 +27,11 @@ const userSchema = new mongoose.Schema(
       enum: ["admin", "user"],
       default: "user",
     },
+
+    // ✅ FIX 1: Added department field
     department: {
       type: String,
       trim: true,
-      default: null,
-    },
-
-    // ── Profile photo ──────────────────────────────────────────────────────────
-    // Relative path under uploads/profiles/ — e.g. "uploads/profiles/abc123.jpg"
-    // null means no photo uploaded yet; has zero effect on face recognition.
-    profileImage: {
-      type: String,
       default: null,
     },
 
