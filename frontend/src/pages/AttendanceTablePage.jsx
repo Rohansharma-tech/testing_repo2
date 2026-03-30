@@ -6,7 +6,7 @@ import PageWrapper from "../components/PageWrapper";
 // ─── Export helpers ───────────────────────────────────────────────────────────
 
 function recordsToCSV(records) {
-  const headers = ["Name", "Email", "Date", "Time", "Status", "Reason", "Latitude", "Longitude", "Accuracy (m)", "Distance (m)"];
+  const headers = ["Name", "Email", "Date", "Time", "Status", "Reason", "Latitude", "Longitude", "Accuracy (m)", "Distance (m)", "Source", "Penalty"];
   const escape = (val) => {
     if (val === null || val === undefined) return "";
     const str = String(val);
@@ -26,6 +26,8 @@ function recordsToCSV(records) {
     escape(r.longitude !== null && r.longitude !== undefined ? r.longitude.toFixed(6) : ""),
     escape(r.locationAccuracy !== null && r.locationAccuracy !== undefined ? Math.round(r.locationAccuracy) : ""),
     escape(r.distanceMeters !== null && r.distanceMeters !== undefined ? r.distanceMeters : ""),
+    escape(r.source || "normal"),
+    escape(r.penalty ? "Yes" : "No"),
   ]);
 
   return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
@@ -245,6 +247,8 @@ export default function AttendanceTablePage() {
       longitude: r.longitude ?? null,
       accuracyMeters: r.locationAccuracy !== null && r.locationAccuracy !== undefined ? Math.round(r.locationAccuracy) : null,
       distanceMeters: r.distanceMeters ?? null,
+      source: r.source || "normal",
+      penalty: r.penalty || false,
     }));
     downloadFile(JSON.stringify(clean, null, 2), buildFilename("json", currentFilters), "application/json");
     flashSuccess(`Exported ${filteredRecords.length} records as JSON`);
@@ -316,6 +320,7 @@ export default function AttendanceTablePage() {
               <option value="all">All statuses</option>
               <option value="present">Present</option>
               <option value="absent">Absent</option>
+              <option value="leave">Leave</option>
             </select>
             <select
               className="input-field"
@@ -431,6 +436,14 @@ export default function AttendanceTablePage() {
                       <AttendanceReasonBadge reason={record.reason} />
                       {record.autoMarked && (
                         <span className="status-chip status-chip-neutral">Auto-Marked</span>
+                      )}
+                      {record.penalty && (
+                        <span className="status-chip bg-rose-100 text-rose-800 border-rose-200 font-bold">Penalty</span>
+                      )}
+                      {record.source && record.source !== "normal" && (
+                        <span className="status-chip bg-purple-100 text-purple-800 border-purple-200 uppercase text-[10px] tracking-wider font-bold">
+                          {record.source}
+                        </span>
                       )}
                     </div>
                   </div>

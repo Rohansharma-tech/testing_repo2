@@ -36,7 +36,6 @@ function UserAvatar({ user, size = "md" }) {
   );
 }
 
-
 function formatFriendlyDate(value) {
   return new Date(`${value}T00:00:00`).toLocaleDateString("en-IN", {
     weekday: "short",
@@ -45,6 +44,77 @@ function formatFriendlyDate(value) {
     year: "numeric",
   });
 }
+
+// ─── Appeal Action Component ──────────────────────────────────────────────────
+// Fetches the user's appeal list and shows the correct state per record date.
+// This prevents the button from showing after an appeal is already submitted.
+
+function AppealAction({ record, onAppeal }) {
+  const [appealStatus, setAppealStatus] = useState(null); // null | "pending" | "approved" | "rejected"
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    async function checkAppeal() {
+      try {
+        const res = await api.get("/appeals/my");
+        const match = res.data.find((a) => a.date === record.date);
+        setAppealStatus(match ? match.status : null);
+      } catch {
+        setAppealStatus(null);
+      } finally {
+        setChecking(false);
+      }
+    }
+    checkAppeal();
+  }, [record.date]);
+
+  if (checking) return null;
+
+  if (appealStatus === "pending") {
+    return (
+      <span className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
+        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        Appeal Pending
+      </span>
+    );
+  }
+
+  if (appealStatus === "approved") {
+    return (
+      <span className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+        Appeal Approved
+      </span>
+    );
+  }
+
+  if (appealStatus === "rejected") {
+    return (
+      <span className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700">
+        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+        Appeal Rejected
+      </span>
+    );
+  }
+
+  // No appeal yet — show the button
+  return (
+    <button
+      onClick={() => onAppeal(record.id, record.date)}
+      className="mt-2 text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100 transition-colors"
+    >
+      Appeal Cutoff Absence
+    </button>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function MyAttendancePage() {
   const { user } = useAuth();
@@ -71,6 +141,21 @@ export default function MyAttendancePage() {
 
     fetchHistory();
   }, []);
+
+  async function handleAppeal(recordId, date) {
+    const reason = window.prompt(`Please enter your reason for appealing your absentee mark on ${date}:`);
+    if (!reason || !reason.trim()) return;
+
+    try {
+      await api.post("/appeals", { date, reason: reason.trim() });
+      alert("Appeal submitted successfully.");
+      // Refresh timeline
+      const res = await api.get("/attendance/my");
+      setRecords(res.data);
+    } catch (err) {
+      alert(err.response?.data?.message || "Failed to submit appeal.");
+    }
+  }
 
   return (
     <PageWrapper
@@ -139,9 +224,27 @@ export default function MyAttendancePage() {
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-2">
-                      <AttendanceStatusBadge status={record.status} />
-                      <AttendanceReasonBadge reason={record.reason} />
+                    <div className="flex flex-col items-end gap-2">
+                      <div className="flex flex-wrap gap-2 justify-end">
+                        <AttendanceStatusBadge status={record.status} />
+                        <AttendanceReasonBadge reason={record.reason} />
+                        {record.source === "appeal" && (
+                          <span className="status-chip bg-purple-100 text-purple-800 border-purple-200 text-[10px] tracking-wider uppercase font-bold">
+                            Appealed
+                          </span>
+                        )}
+                        {record.penalty && (
+                          <span className="status-chip bg-rose-100 text-rose-800 border-rose-200 text-[10px] tracking-wider uppercase font-bold">
+                            Penalty
+                          </span>
+                        )}
+                      </div>
+
+                      {/* ── Appeal section: only for auto-absent cutoff records ── */}
+                      {record.status === "absent" &&
+                        (record.source === "cutoff" || record.reason === "auto_absent") && (
+                          <AppealAction record={record} onAppeal={handleAppeal} />
+                        )}
                     </div>
                   </div>
                 </div>

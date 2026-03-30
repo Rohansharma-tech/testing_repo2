@@ -26,12 +26,16 @@ const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/users");
 const attendanceRoutes = require("./routes/attendance");
 const settingsRoutes = require("./routes/settings");
+const leavesRoutes = require("./routes/leaves");
+const appealsRoutes = require("./routes/appeals");
 const { initCutoffScheduler } = require("./services/autoCutoffScheduler");
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/settings", settingsRoutes);
+app.use("/api/leaves", leavesRoutes);
+app.use("/api/appeals", appealsRoutes);
 
 // ---- Health Check ----
 app.get("/", (_req, res) => {

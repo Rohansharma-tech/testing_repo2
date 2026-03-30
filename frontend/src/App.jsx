@@ -14,6 +14,8 @@ import UserManagementPage from "./pages/UserManagementPage";
 import AttendanceTablePage from "./pages/AttendanceTablePage";
 import CutoffSettingsPage from "./pages/CutoffSettingsPage";
 import LocationSettingsPage from "./pages/Locationsettingpage";
+import LeaveManagementPage from "./pages/LeaveManagementPage";
+import AdminLeavesAppealsPage from "./pages/AdminLeavesAppealsPage";
 
 // ---- Protected Route Wrapper ----
 function ProtectedRoute({ children, adminOnly = false }) {
@@ -51,6 +53,7 @@ function AppRoutes() {
       <Route path="/mark-attendance" element={<ProtectedRoute><MarkAttendancePage /></ProtectedRoute>} />
       <Route path="/register-face"   element={<ProtectedRoute><RegisterFacePage /></ProtectedRoute>} />
       <Route path="/my-attendance"   element={<ProtectedRoute><MyAttendancePage /></ProtectedRoute>} />
+      <Route path="/leaves"          element={<ProtectedRoute><LeaveManagementPage /></ProtectedRoute>} />
 
       {/* ── Admin routes ── */}
       <Route path="/admin"             element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
@@ -58,6 +61,7 @@ function AppRoutes() {
       <Route path="/admin/attendance"  element={<ProtectedRoute adminOnly><AttendanceTablePage /></ProtectedRoute>} />
       <Route path="/admin/settings"    element={<ProtectedRoute adminOnly><CutoffSettingsPage /></ProtectedRoute>} />
       <Route path="/admin/location"    element={<ProtectedRoute adminOnly><LocationSettingsPage /></ProtectedRoute>} />
+      <Route path="/admin/requests"    element={<ProtectedRoute adminOnly><AdminLeavesAppealsPage /></ProtectedRoute>} />
 
       {/* ── Fallbacks ── */}
       <Route path="/" element={<Navigate to="/login" replace />} />

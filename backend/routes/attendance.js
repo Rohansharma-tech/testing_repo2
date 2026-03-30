@@ -6,6 +6,8 @@ const express = require("express");
 const router = express.Router();
 const Attendance = require("../models/Attendance");
 const User = require("../models/User");
+const LeaveRequest = require("../models/LeaveRequest");
+const Appeal = require("../models/Appeal");
 const { protect, adminOnly } = require("../middleware/auth");
 const {
   ATTENDANCE_REASON,
@@ -48,6 +50,8 @@ function serializeAttendanceRecord(record) {
     locationTimestamp: record.locationTimestamp,
     status: record.status,
     reason: record.reason,
+    penalty: record.penalty ?? false,
+    source: record.source ?? "normal",
     autoMarked: record.autoMarked ?? false,
     adminApproved: record.adminApproved ?? false,
     markedAt: record.markedAt,
@@ -314,6 +318,17 @@ router.get("/stats", adminOnly, async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ message: "Failed to fetch stats." });
+  }
+});
+
+// ---- GET /api/attendance/pending-counts ----
+router.get("/pending-counts", adminOnly, async (req, res) => {
+  try {
+    const leaveCount = await LeaveRequest.countDocuments({ status: "pending" });
+    const appealCount = await Appeal.countDocuments({ status: "pending" });
+    return res.json({ count: leaveCount + appealCount, leaves: leaveCount, appeals: appealCount });
+  } catch (err) {
+    return res.status(500).json({ message: "Failed to fetch pending counts." });
   }
 });
 

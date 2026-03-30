@@ -88,6 +88,7 @@ async function runAutoAbsentJob() {
             status: "absent",
             reason: "auto_absent",
             autoMarked: true,
+            source: "cutoff",
             markedAt: dateParts.now,
             // Location fields intentionally null for auto-absent
             latitude: null,

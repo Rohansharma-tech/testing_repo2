@@ -1,6 +1,8 @@
 // src/components/Navbar.jsx
 
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import api from "../api/axios";
 import { useAuth } from "../context/AuthContext";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -78,6 +80,11 @@ function NavLink({ link, pathname, mobile = false }) {
         }`}
       >
         {link.mobileLabel}
+        {link.badge && (
+          <span className="ml-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] font-bold text-white">
+            {link.badge > 99 ? "99+" : link.badge}
+          </span>
+        )}
       </Link>
     );
   }
@@ -91,7 +98,14 @@ function NavLink({ link, pathname, mobile = false }) {
           : "border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50"
       }`}
     >
-      <span>{link.label}</span>
+      <div className="flex items-center gap-2">
+        <span>{link.label}</span>
+        {link.badge && (
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-[10px] font-bold text-white">
+            {link.badge > 99 ? "99+" : link.badge}
+          </span>
+        )}
+      </div>
       <span className="text-xs uppercase tracking-[0.2em] text-slate-400">{link.shortLabel}</span>
     </Link>
   );
@@ -103,6 +117,15 @@ export default function Navbar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [pendingCount, setPendingCount] = useState(0);
+
+  useEffect(() => {
+    if (user?.role === "admin") {
+      api.get("/attendance/pending-counts")
+        .then((res) => setPendingCount(res.data.count))
+        .catch(() => {});
+    }
+  }, [user, location.pathname]); // Update on nav
 
   const handleLogout = () => {
     logout();
@@ -113,6 +136,7 @@ export default function Navbar() {
     { to: "/dashboard",       label: "Overview",           mobileLabel: "Home",     shortLabel: "OV" },
     { to: "/mark-attendance", label: "Mark Attendance",    mobileLabel: "Mark",     shortLabel: "AT" },
     { to: "/my-attendance",   label: "Attendance History", mobileLabel: "History",  shortLabel: "HS" },
+    { to: "/leaves",          label: "My Leaves",          mobileLabel: "Leaves",   shortLabel: "LV" },
     { to: "/register-face",   label: "Face Registration",  mobileLabel: "Face",     shortLabel: "FR" },
   ];
 
@@ -122,6 +146,7 @@ export default function Navbar() {
     { to: "/admin/attendance",   label: "Attendance", mobileLabel: "Records",  shortLabel: "AR" },
     { to: "/admin/settings",     label: "Settings",   mobileLabel: "Settings", shortLabel: "ST" },
     { to: "/admin/location",     label: "Location",   mobileLabel: "Location", shortLabel: "LC" },
+    { to: "/admin/requests",     label: "Requests & Appeals", mobileLabel: "Requests", shortLabel: "RQ", badge: pendingCount > 0 ? pendingCount : null },
   ];
 
   const links = user?.role === "admin" ? adminLinks : userLinks;

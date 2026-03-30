@@ -1,6 +1,7 @@
 export const ATTENDANCE_STATUS = {
   PRESENT: "present",
   ABSENT: "absent",
+  LEAVE: "leave",
   NOT_MARKED: "not_marked",
 };
 
@@ -18,6 +19,8 @@ export function getStatusLabel(status) {
       return "Present";
     case ATTENDANCE_STATUS.ABSENT:
       return "Absent";
+    case ATTENDANCE_STATUS.LEAVE:
+      return "Leave";
     default:
       return "Not Marked";
   }
@@ -46,6 +49,8 @@ export function getStatusClasses(status) {
       return "status-chip status-chip-success";
     case ATTENDANCE_STATUS.ABSENT:
       return "status-chip status-chip-danger";
+    case ATTENDANCE_STATUS.LEAVE:
+      return "status-chip bg-blue-100 text-blue-800 border-blue-200";
     default:
       return "status-chip status-chip-neutral";
   }

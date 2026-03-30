@@ -8,9 +8,9 @@ import { ATTENDANCE_STATUS, formatRecordSummary } from "../utils/attendance";
 
 // ─── User Avatar ──────────────────────────────────────────────────────────────
 
-function UserAvatar({ user, size = "lg" }) {
-  const sizeClasses = { sm: "h-8 w-8 text-xs", md: "h-10 w-10 text-sm", lg: "h-14 w-14 text-lg" };
-  const base = `${sizeClasses[size]} flex-shrink-0 rounded-full object-cover`;
+function UserAvatar({ user, size = "xl" }) {
+  const sizeClasses = { sm: "h-8 w-8 text-xs", md: "h-10 w-10 text-sm", lg: "h-14 w-14 text-lg", xl: "h-20 w-20 text-xl" };
+  const base = `${sizeClasses[size]} flex-shrink-0 rounded-full object-cover shadow-sm`;
 
   const initials = user?.name
     ? user.name.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase()
@@ -80,6 +80,26 @@ export default function UserDashboard() {
     fetchData();
   }, []);
   const todayRecord = todayStatus?.record;
+  const currentStatus = todayStatus?.status || ATTENDANCE_STATUS.NOT_MARKED;
+
+  // Dynamic colors for the summary box
+  let summaryBoxClasses = "mt-5 rounded-xl px-6 py-4 w-full max-w-md border ";
+  let summaryTextClasses = "text-sm font-medium ";
+  let distanceTextClasses = "mt-1 text-xs ";
+
+  if (loading || !todayStatus || currentStatus === ATTENDANCE_STATUS.NOT_MARKED) {
+    summaryBoxClasses += "bg-slate-50 border-slate-200";
+    summaryTextClasses += "text-slate-700";
+    distanceTextClasses += "text-slate-500";
+  } else if (currentStatus === ATTENDANCE_STATUS.PRESENT) {
+    summaryBoxClasses += "bg-emerald-50 border-emerald-200";
+    summaryTextClasses += "text-emerald-800";
+    distanceTextClasses += "text-emerald-600/80";
+  } else if (currentStatus === ATTENDANCE_STATUS.ABSENT) {
+    summaryBoxClasses += "bg-rose-50 border-rose-200";
+    summaryTextClasses += "text-rose-800";
+    distanceTextClasses += "text-rose-600/80";
+  }
 
   return (
     <PageWrapper
@@ -89,24 +109,31 @@ export default function UserDashboard() {
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <section className="space-y-6">
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="card md:col-span-2">
-              <p className="section-label">Today</p>
-              <div className="mt-4 flex flex-wrap items-center gap-3">
+            <div className="card md:col-span-2 flex flex-col items-center text-center p-8">
+              <p className="section-label w-full text-left mb-2">Today</p>
+              
+              <div className="mt-2 text-center">
+                <div className="inline-block rounded-full ring-4 ring-white shadow-md">
+                  <UserAvatar user={user} size="xl" />
+                </div>
+                <h2 className="mt-4 text-3xl font-semibold tracking-tight text-slate-900">{user?.name}</h2>
+              </div>
+
+              <div className="mt-4 flex flex-wrap justify-center gap-3">
                 <AttendanceStatusBadge status={todayStatus?.status || ATTENDANCE_STATUS.NOT_MARKED} />
                 <AttendanceReasonBadge reason={todayRecord?.reason} />
               </div>
-              <div className="mt-5 flex items-center gap-4">
-                <UserAvatar user={user} size="lg" />
-                <h2 className="text-2xl font-semibold tracking-tight text-slate-900">{user?.name}</h2>
-              </div>
-              <p className="mt-2 text-sm text-slate-500">
-                {loading ? "Checking current attendance state..." : formatRecordSummary(todayRecord)}
-              </p>
-              {!loading && todayRecord?.distanceMeters !== null && todayRecord?.distanceMeters !== undefined && (
-                <p className="mt-3 text-sm text-slate-500">
-                  Last recorded distance from geofence: {todayRecord.distanceMeters} m
+
+              <div className={summaryBoxClasses}>
+                <p className={summaryTextClasses}>
+                  {loading ? "Checking current attendance state..." : formatRecordSummary(todayRecord)}
                 </p>
-              )}
+                {!loading && todayRecord?.distanceMeters !== null && todayRecord?.distanceMeters !== undefined && (
+                  <p className={distanceTextClasses}>
+                    Last recorded distance from geofence: {todayRecord.distanceMeters} m
+                  </p>
+                )}
+              </div>
             </div>
 
             <div className="card">
