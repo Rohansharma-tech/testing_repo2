@@ -22,6 +22,21 @@ function normalizeFaceDescriptor(faceDescriptor) {
   return normalized.every((value) => Number.isFinite(value)) ? normalized : null;
 }
 
+/**
+ * Euclidean distance between two 128-dimensional face descriptors.
+ * Same threshold used by face-api.js on the frontend (0.6).
+ */
+const FACE_MATCH_THRESHOLD = 0.6;
+
+function euclideanDistance(a, b) {
+  let sum = 0;
+  for (let i = 0; i < 128; i++) {
+    const diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
+}
+
 // ---- GET /api/settings/geofence ----
 // Returns the *active* geofence config (DB override wins over .env)
 router.get("/geofence", protect, async (req, res) => {
@@ -135,6 +150,25 @@ router.put("/register-face", protect, async (req, res) => {
       return res.status(409).json({ message: "Face already registered" });
     }
 
+    // ── Global uniqueness check ────────────────────────────────────────────────
+    // Scan all other registered users and reject if this face is too similar.
+    const otherUsers = await User.find(
+      { hasFace: true, _id: { $ne: req.user.id } },
+      { faceDescriptor: 1, name: 1 }
+    ).lean();
+
+    for (const other of otherUsers) {
+      if (!Array.isArray(other.faceDescriptor) || other.faceDescriptor.length !== 128) continue;
+      const distance = euclideanDistance(faceDescriptor, other.faceDescriptor);
+      if (distance < FACE_MATCH_THRESHOLD) {
+        return res.status(409).json({
+          message: "This face is already registered to another account. Each face can only be linked to one account.",
+          code: "FACE_DUPLICATE",
+        });
+      }
+    }
+    // ── End uniqueness check ───────────────────────────────────────────────────
+
     await User.findByIdAndUpdate(
       req.user.id,
       { faceDescriptor, hasFace: true },
@@ -143,6 +177,7 @@ router.put("/register-face", protect, async (req, res) => {
 
     return res.json({ message: "Face registered successfully." });
   } catch (err) {
+    console.error("register-face error:", err);
     return res.status(500).json({ message: "Failed to register face." });
   }
 });
@@ -223,6 +258,104 @@ router.delete("/cutoff", protect, adminOnly, async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ message: "Failed to disable cutoff." });
+  }
+});
+
+// =============================================================
+// ATTENDANCE TIME WINDOW ENDPOINTS (Admin Only)
+// =============================================================
+
+const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+// ---- GET /api/settings/attendance-window ----
+// Returns the attendance start/end time window + cutoff meta.
+router.get("/attendance-window", protect, adminOnly, async (req, res) => {
+  try {
+    const settings = await OrganizationSettings.getSingleton();
+    return res.json({
+      attendanceStartTime: settings.attendanceStartTime,
+      attendanceEndTime: settings.attendanceEndTime,
+      cutoffEnabled: settings.cutoffEnabled,
+      cutoffTimeZone: settings.cutoffTimeZone,
+      scheduledCutoff: getScheduledCutoff(),
+      updatedAt: settings.updatedAt,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: "Failed to fetch attendance window settings." });
+  }
+});
+
+// ---- PUT /api/settings/attendance-window ----
+// Saves attendanceStartTime and/or attendanceEndTime.
+// When attendanceEndTime is set it ALSO re-drives the auto-absent cron
+// (takes priority over the legacy cutoffTime).
+router.put("/attendance-window", protect, adminOnly, async (req, res) => {
+  const { attendanceStartTime, attendanceEndTime, cutoffEnabled, cutoffTimeZone } = req.body;
+
+  // Validate whichever fields were supplied
+  if (attendanceStartTime !== undefined && attendanceStartTime !== null && attendanceStartTime !== "") {
+    if (!TIME_RE.test(attendanceStartTime)) {
+      return res.status(400).json({
+        message: "attendanceStartTime must be in HH:MM 24-hour format (e.g. '08:00').",
+      });
+    }
+  }
+  if (attendanceEndTime !== undefined && attendanceEndTime !== null && attendanceEndTime !== "") {
+    if (!TIME_RE.test(attendanceEndTime)) {
+      return res.status(400).json({
+        message: "attendanceEndTime must be in HH:MM 24-hour format (e.g. '10:00').",
+      });
+    }
+  }
+  if (
+    attendanceStartTime && attendanceEndTime &&
+    attendanceStartTime >= attendanceEndTime
+  ) {
+    return res.status(400).json({
+      message: "attendanceStartTime must be earlier than attendanceEndTime.",
+    });
+  }
+
+  try {
+    const settings = await OrganizationSettings.getSingleton();
+
+    // Null means "clear this boundary"
+    if (attendanceStartTime !== undefined) {
+      settings.attendanceStartTime = attendanceStartTime || null;
+    }
+    if (attendanceEndTime !== undefined) {
+      settings.attendanceEndTime = attendanceEndTime || null;
+    }
+    if (cutoffTimeZone) settings.cutoffTimeZone = cutoffTimeZone;
+
+    // cutoffEnabled controls whether the auto-absent cron fires
+    const shouldEnable = cutoffEnabled !== false && cutoffEnabled !== undefined
+      ? Boolean(cutoffEnabled)
+      : settings.cutoffEnabled;
+    settings.cutoffEnabled = shouldEnable;
+    settings.lastUpdatedBy = req.user.id;
+    await settings.save();
+
+    // Re-drive the scheduler: prefer attendanceEndTime, fall back to cutoffTime
+    const effectiveCutoff = settings.attendanceEndTime || settings.cutoffTime;
+    if (shouldEnable && effectiveCutoff) {
+      scheduleCutoffJob(effectiveCutoff, settings.cutoffTimeZone);
+    } else if (!shouldEnable) {
+      cancelCutoffJob();
+    }
+
+    return res.json({
+      message: "Attendance window updated.",
+      attendanceStartTime: settings.attendanceStartTime,
+      attendanceEndTime: settings.attendanceEndTime,
+      cutoffEnabled: settings.cutoffEnabled,
+      cutoffTimeZone: settings.cutoffTimeZone,
+      scheduledCutoff: getScheduledCutoff(),
+      updatedAt: settings.updatedAt,
+    });
+  } catch (err) {
+    console.error("Save attendance-window error:", err);
+    return res.status(500).json({ message: "Failed to save attendance window settings." });
   }
 });
 

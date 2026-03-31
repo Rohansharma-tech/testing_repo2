@@ -105,7 +105,7 @@
   }
 
   .status-chip {
-    @apply inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold;
+    @apply inline-flex items-center rounded-full border border-transparent px-3 py-1 text-xs font-semibold;
   }
 
   .status-chip-success {

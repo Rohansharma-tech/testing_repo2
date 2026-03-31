@@ -8,7 +8,7 @@ import { useToast } from "../components/Toast";
 // ─── Avatar helper ────────────────────────────────────────────────────────────
 
 function UserAvatar({ user, size = "md" }) {
-  const sizeClasses = { sm: "h-8 w-8 text-xs", md: "h-10 w-10 text-sm" };
+  const sizeClasses = { sm: "h-8 w-8 text-xs", md: "h-9 w-9 text-sm", lg: "h-11 w-11 text-base" };
   const base = `${sizeClasses[size]} flex-shrink-0 rounded-full object-cover`;
 
   const initials = user.name
@@ -16,7 +16,6 @@ function UserAvatar({ user, size = "md" }) {
     : "?";
 
   const src = user.profileImageUrl || (user.profileImage ? `/${user.profileImage}` : null);
-
   const [broken, setBroken] = useState(false);
 
   if (src && !broken) {
@@ -132,6 +131,17 @@ function DepartmentDropdown({ departments, value, onChange, onAddDepartment, pla
   );
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatJoinedDate(isoDate) {
+  if (!isoDate) return "—";
+  return new Date(isoDate).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 const EMPTY_FORM = { name: "", email: "", password: "", role: "user", department: "" };
@@ -143,12 +153,19 @@ export default function UserManagementPage() {
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
-  const [photoFile, setPhotoFile] = useState(null);       // File object
-  const [photoPreview, setPhotoPreview] = useState(null); // Object URL for preview
-  const [departmentFilter, setDepartmentFilter] = useState("all");
-  const [groupByDepartment, setGroupByDepartment] = useState(false);
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
   const photoInputRef = useRef(null);
   const { showToast, ToastContainer } = useToast();
+
+  // Filters
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [deptFilter, setDeptFilter] = useState("");
+
+  // Confirm deactivate
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   const fetchUsers = async () => {
     try {
@@ -164,10 +181,9 @@ export default function UserManagementPage() {
   const fetchDepartments = async () => {
     try {
       const res = await api.get("/users/departments");
-      const names = res.data.map((d) => (typeof d === "string" ? d : d.name));
-      setDepartments(names);
+      setDepartments(res.data.map((d) => (typeof d === "string" ? d : d.name)));
     } catch {
-      // Non-fatal — fall back to deriving from users
+      // non-fatal
     }
   };
 
@@ -176,7 +192,6 @@ export default function UserManagementPage() {
     fetchUsers();
   }, []);
 
-  // Cleanup object URL when component unmounts or photo changes
   useEffect(() => {
     return () => { if (photoPreview) URL.revokeObjectURL(photoPreview); };
   }, [photoPreview]);
@@ -210,7 +225,6 @@ export default function UserManagementPage() {
     event.preventDefault();
     setSubmitting(true);
     try {
-      // Use FormData so we can attach the optional photo alongside the text fields
       const data = new FormData();
       data.append("name", form.name);
       data.append("email", form.email);
@@ -219,9 +233,7 @@ export default function UserManagementPage() {
       if (form.department) data.append("department", form.department);
       if (photoFile) data.append("profileImage", photoFile);
 
-      await api.post("/users", data, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      await api.post("/users", data, { headers: { "Content-Type": "multipart/form-data" } });
 
       setForm(EMPTY_FORM);
       handleRemovePhoto();
@@ -235,169 +247,143 @@ export default function UserManagementPage() {
     }
   };
 
-  const handleDelete = async (id, name) => {
-    if (!window.confirm(`Delete user "${name}"? This action cannot be undone.`)) return;
+  const handleDelete = (id, name) => setDeleteConfirm({ id, name });
+
+  const confirmDelete = async () => {
+    if (!deleteConfirm) return;
     try {
-      await api.delete(`/users/${id}`);
-      showToast("User deleted successfully.", "success");
+      await api.delete(`/users/${deleteConfirm.id}`);
+      showToast(`"${deleteConfirm.name}" has been deactivated. Historical records are preserved.`, "success");
       fetchUsers();
-    } catch {
-      showToast("Failed to delete user.", "error");
+    } catch (err) {
+      showToast(err.response?.data?.message || "Failed to deactivate user.", "error");
+    } finally {
+      setDeleteConfirm(null);
     }
   };
 
+  // ── Filtered table data — always shows employees only ────────────────────
   const filteredUsers = useMemo(() => {
-    if (departmentFilter === "all") return users;
-    if (departmentFilter === "__none__") return users.filter((u) => !u.department);
-    return users.filter((u) => u.department === departmentFilter);
-  }, [users, departmentFilter]);
+    let result = users.filter((u) => u.role === "user"); // admins never shown
+    const q = search.trim().toLowerCase();
+    if (q) result = result.filter((u) => u.name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q));
+    if (deptFilter) result = result.filter((u) => u.department === deptFilter);
+    if (dateFrom) result = result.filter((u) => u.createdAt && u.createdAt.slice(0, 10) >= dateFrom);
+    if (dateTo) result = result.filter((u) => u.createdAt && u.createdAt.slice(0, 10) <= dateTo);
+    return result;
+  }, [users, search, deptFilter, dateFrom, dateTo]);
 
-  const groupedUsers = useMemo(() => {
-    if (!groupByDepartment) return null;
-    const map = new Map();
-    for (const user of filteredUsers) {
-      const key = user.department || "Unassigned";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(user);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [filteredUsers, groupByDepartment]);
+  const hasFilters = search || deptFilter || dateFrom || dateTo;
 
-  // ── UserCard ────────────────────────────────────────────────────────────────
-  const UserCard = ({ user }) => (
-    <div className="rounded-2xl border border-slate-200 p-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-start gap-3">
-          <UserAvatar user={user} size="md" />
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold text-slate-900">{user.name}</p>
-              <span className={user.role === "admin" ? "status-chip status-chip-info" : "status-chip status-chip-neutral"}>
-                {user.role === "admin" ? "Admin" : "Employee"}
-              </span>
-              <span className={user.hasFace ? "status-chip status-chip-success" : "status-chip status-chip-warning"}>
-                {user.hasFace ? "Face Registered" : "Face Pending"}
-              </span>
-            </div>
-            <p className="mt-1.5 text-sm text-slate-500">{user.email}</p>
-            {user.department && (
-              <p className="mt-1 text-xs text-slate-400">
-                Dept: <span className="font-medium text-slate-600">{user.department}</span>
-              </p>
-            )}
-          </div>
-        </div>
-        {user.role !== "admin" && (
-          <button onClick={() => handleDelete(user._id, user.name)} className="btn-danger">
-            Delete
-          </button>
-        )}
-      </div>
-    </div>
-  );
+  // ── Quick stats — employees only ───────────────────────────────────────────
+  const employees = users.filter((u) => u.role === "user");
+  const totalUsers = employees.length;
+  const totalEmployees = totalUsers;
+  const faceReady = employees.filter((u) => u.hasFace).length;
 
   return (
     <PageWrapper
       title="User Management"
-      description="Create employee accounts and review face-registration readiness before attendance begins."
-      actions={
-        <button onClick={() => setShowForm((c) => !c)} className="btn-primary">
-          {showForm ? "Close form" : "Create user"}
-        </button>
-      }
+      description="Create and manage employee accounts. Track face-registration readiness before attendance begins."
     >
       <ToastContainer />
 
-      <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        {/* ── Left: stats + form ── */}
-        <section className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-1">
-            <div className="card">
-              <p className="section-label">Users</p>
-              <p className="metric-value mt-4">{users.length}</p>
-              <p className="metric-label">Total accounts</p>
+      {/* ── Deactivate confirm modal ── */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <div className="border-b border-slate-100 px-6 pb-4 pt-6">
+              <p className="section-label">Deactivate Account</p>
+              <h2 className="mt-1 text-lg font-semibold text-slate-900">{deleteConfirm.name}</h2>
             </div>
-            <div className="card">
-              <p className="section-label">Employees</p>
-              <p className="metric-value mt-4">{users.filter((u) => u.role === "user").length}</p>
-              <p className="metric-label">Non-admin users</p>
-            </div>
-            <div className="card">
-              <p className="section-label">Face Ready</p>
-              <p className="metric-value mt-4">{users.filter((u) => u.hasFace).length}</p>
-              <p className="metric-label">Accounts with face registration</p>
+            <div className="space-y-4 px-6 py-5">
+              <p className="text-sm text-slate-600">
+                This account will be <strong>disabled</strong> and the user will no longer be able to log in.
+                All historical attendance records are preserved.
+              </p>
+              <div className="flex items-center gap-3">
+                <button onClick={confirmDelete} className="btn-danger">Deactivate</button>
+                <button onClick={() => setDeleteConfirm(null)} className="btn-secondary">Cancel</button>
+              </div>
             </div>
           </div>
+        </div>
+      )}
 
-          {showForm && (
-            <div className="card">
-              <p className="section-label">Create User</p>
-              <form onSubmit={handleCreate} className="mt-5 space-y-4">
-                {/* ── Profile photo picker ── */}
+      {/* ── Create User modal ── */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 pb-4 pt-6">
+              <div>
+                <p className="section-label">New Account</p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">Create User</h2>
+              </div>
+              <button
+                onClick={() => { setShowForm(false); setForm(EMPTY_FORM); handleRemovePhoto(); }}
+                className="rounded-full p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleCreate} className="max-h-[75vh] overflow-y-auto px-6 py-5">
+              <div className="space-y-4">
+                {/* Photo */}
                 <div>
                   <label className="mb-2 block text-sm font-medium text-slate-700">
-                    Profile photo <span className="text-slate-400 font-normal">(optional)</span>
+                    Profile photo <span className="font-normal text-slate-400">(optional)</span>
                   </label>
                   <div className="flex items-center gap-4">
-                    {/* Preview circle */}
-                    <div className="h-16 w-16 flex-shrink-0 overflow-hidden rounded-full border-2 border-dashed border-slate-300 bg-slate-50">
+                    <div className="h-14 w-14 flex-shrink-0 overflow-hidden rounded-full border-2 border-dashed border-slate-300 bg-slate-50">
                       {photoPreview ? (
                         <img src={photoPreview} alt="Preview" className="h-full w-full rounded-full object-cover" />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-slate-300">
-                          <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
                           </svg>
                         </div>
                       )}
                     </div>
-
-                    {/* Buttons */}
-                    <div className="flex flex-col gap-2">
-                      <button
-                        type="button"
-                        onClick={() => photoInputRef.current?.click()}
-                        className="btn-secondary text-sm"
-                      >
+                    <div className="flex flex-col gap-1.5">
+                      <button type="button" onClick={() => photoInputRef.current?.click()} className="btn-secondary text-sm">
                         {photoPreview ? "Change photo" : "Upload photo"}
                       </button>
                       {photoPreview && (
-                        <button type="button" onClick={handleRemovePhoto} className="text-xs text-red-500 hover:underline text-left">
-                          Remove
-                        </button>
+                        <button type="button" onClick={handleRemovePhoto} className="text-left text-xs text-red-500 hover:underline">Remove</button>
                       )}
                     </div>
                   </div>
-                  <input
-                    ref={photoInputRef}
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp,image/gif"
-                    className="hidden"
-                    onChange={handlePhotoChange}
-                  />
+                  <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" onChange={handlePhotoChange} />
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">Full name</label>
+                    <input className="input-field" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Employee name" required />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">Email</label>
+                    <input type="email" className="input-field" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="employee@example.com" required />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
+                    <input type="password" className="input-field" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Min. 6 characters" minLength={6} required />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">Role</label>
+                    <select className="input-field" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                      <option value="user">Employee</option>
+                      <option value="admin">Administrator</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Full name</label>
-                  <input className="input-field" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Employee name" required />
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Email</label>
-                  <input type="email" className="input-field" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="employee@example.com" required />
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Password</label>
-                  <input type="password" className="input-field" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Minimum 6 characters" minLength={6} required />
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Role</label>
-                  <select className="input-field" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-                    <option value="user">Employee</option>
-                    <option value="admin">Administrator</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Department</label>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700">Department</label>
                   <DepartmentDropdown
                     departments={allDepartments}
                     value={form.department}
@@ -405,77 +391,222 @@ export default function UserManagementPage() {
                     onAddDepartment={handleAddDepartment}
                   />
                 </div>
-                <button type="submit" disabled={submitting} className="btn-primary w-full">
-                  {submitting ? "Creating..." : "Create user"}
-                </button>
-              </form>
-            </div>
-          )}
-        </section>
 
-        {/* ── Right: filter + list ── */}
-        <section className="card">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="section-label">Accounts</p>
-              <h2 className="mt-3 text-xl font-semibold text-slate-900">Current users</h2>
-            </div>
-            <p className="text-sm text-slate-500">{users.length} total</p>
+                <div className="flex items-center gap-3 border-t border-slate-100 pt-4">
+                  <button type="submit" disabled={submitting} className="btn-primary disabled:opacity-50">
+                    {submitting ? "Creating…" : "Create user"}
+                  </button>
+                  <button type="button" onClick={() => { setShowForm(false); setForm(EMPTY_FORM); handleRemovePhoto(); }} className="btn-secondary">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
+        </div>
+      )}
 
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            <select className="input-field flex-1" value={departmentFilter} onChange={(e) => setDepartmentFilter(e.target.value)}>
-              <option value="all">All departments</option>
-              {allDepartments.map((dept) => (
-                <option key={dept} value={dept}>{dept}</option>
-              ))}
-              <option value="__none__">Unassigned</option>
+      <div className="space-y-5">
+        {/* ── Stats strip ── */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className="card py-4">
+            <p className="section-label">Total Accounts</p>
+            <p className="metric-value mt-3">{totalUsers}</p>
+          </div>
+          <div className="card py-4">
+            <p className="section-label">Employees</p>
+            <p className="metric-value mt-3">{totalEmployees}</p>
+          </div>
+          <div className="card py-4">
+            <p className="section-label">Face Ready</p>
+            <p className="metric-value mt-3">{faceReady}</p>
+          </div>
+        </div>
+
+        {/* ── Control bar ── */}
+        <div className="card py-4">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Search */}
+            <div className="relative min-w-0 flex-1">
+              <svg className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 104.5 16.65a7.5 7.5 0 0012.15 0z" />
+              </svg>
+              <input
+                type="text"
+                className="input-field pl-10"
+                placeholder="Search by name or email…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+
+            {/* Department filter */}
+            <select
+              className="input-field w-auto"
+              value={deptFilter}
+              onChange={(e) => setDeptFilter(e.target.value)}
+            >
+              <option value="">All departments</option>
+              {allDepartments.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
 
-            <button onClick={() => setGroupByDepartment((v) => !v)} className={groupByDepartment ? "btn-primary" : "btn-secondary"}>
-              {groupByDepartment ? "Ungroup" : "Group by dept."}
+            {/* Created date range */}
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                className="input-field w-auto"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                title="Joined from"
+              />
+              <span className="text-xs text-slate-400 flex-shrink-0">to</span>
+              <input
+                type="date"
+                className="input-field w-auto"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                title="Joined to"
+              />
+            </div>
+
+            {/* Clear filters */}
+            {hasFilters && (
+              <button
+                onClick={() => { setSearch(""); setDeptFilter(""); setDateFrom(""); setDateTo(""); }}
+                className="btn-secondary text-sm"
+              >
+                Clear
+              </button>
+            )}
+
+            {/* Add User */}
+            <button onClick={() => setShowForm(true)} className="btn-primary flex items-center gap-2">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              Add User
             </button>
+          </div>
+        </div>
 
-            {departmentFilter !== "all" && (
-              <button onClick={() => setDepartmentFilter("all")} className="btn-secondary">Reset</button>
-            )}
+        {/* ── Table ── */}
+        <div className="card overflow-hidden p-0">
+          {/* Table header */}
+          <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+            <div>
+              <p className="section-label">Accounts</p>
+              <p className="mt-1 text-sm text-slate-500">
+                {filteredUsers.length} {filteredUsers.length === 1 ? "user" : "users"}
+                {hasFilters && <span className="text-slate-400"> (filtered from {users.length} total)</span>}
+              </p>
+            </div>
           </div>
 
-          <div className="mt-6 space-y-3">
+          <div className="overflow-x-auto">
             {loading ? (
-              [1, 2, 3].map((item) => (
-                <div key={item} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 animate-pulse rounded-full bg-slate-200" />
-                    <div>
-                      <div className="h-4 w-40 animate-pulse rounded bg-slate-200" />
-                      <div className="mt-2 h-3 w-28 animate-pulse rounded bg-slate-200" />
+              <div className="space-y-0 divide-y divide-slate-100">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="flex items-center gap-4 px-6 py-4">
+                    <div className="h-9 w-9 animate-pulse rounded-full bg-slate-200" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-3.5 w-36 animate-pulse rounded bg-slate-200" />
+                      <div className="h-3 w-48 animate-pulse rounded bg-slate-200" />
                     </div>
+                    <div className="h-5 w-20 animate-pulse rounded-full bg-slate-200" />
+                    <div className="h-5 w-24 animate-pulse rounded-full bg-slate-200" />
+                    <div className="h-3 w-24 animate-pulse rounded bg-slate-200" />
                   </div>
-                </div>
-              ))
-            ) : filteredUsers.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-300 p-8 text-sm text-slate-500">
-                No users match the current filter.
+                ))}
               </div>
-            ) : groupByDepartment && groupedUsers ? (
-              groupedUsers.map(([deptName, deptUsers]) => (
-                <div key={deptName}>
-                  <div className="mb-2 flex items-center gap-3">
-                    <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">{deptName}</p>
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">{deptUsers.length}</span>
-                    <div className="h-px flex-1 bg-slate-200" />
-                  </div>
-                  <div className="space-y-3">
-                    {deptUsers.map((user) => <UserCard key={user._id} user={user} />)}
-                  </div>
-                </div>
-              ))
+            ) : filteredUsers.length === 0 ? (
+              <div className="px-6 py-16 text-center">
+                <p className="text-sm font-medium text-slate-500">No users match the current filters.</p>
+                {hasFilters && (
+                  <button
+                    onClick={() => { setSearch(""); setRoleFilter("all"); setStatusFilter("all"); }}
+                    className="mt-3 text-sm font-semibold text-blue-600 hover:underline"
+                  >
+                    Clear all filters
+                  </button>
+                )}
+              </div>
             ) : (
-              filteredUsers.map((user) => <UserCard key={user._id} user={user} />)
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50">
+                    <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">User</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Email</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Department</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Role</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Face</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Joined</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredUsers.map((user) => (
+                    <tr key={user._id} className="transition-colors hover:bg-slate-50">
+                      {/* User (avatar + name) */}
+                      <td className="px-6 py-3.5">
+                        <div className="flex items-center gap-3">
+                          <UserAvatar user={user} size="md" />
+                          <span className="font-medium text-slate-900">{user.name}</span>
+                        </div>
+                      </td>
+
+                      {/* Email */}
+                      <td className="max-w-[200px] px-4 py-3.5">
+                        <span className="truncate text-slate-500">{user.email}</span>
+                      </td>
+
+                      {/* Department */}
+                      <td className="px-4 py-3.5">
+                        {user.department ? (
+                          <span className="status-chip bg-slate-100 text-slate-600">{user.department}</span>
+                        ) : (
+                          <span className="text-xs text-slate-400">—</span>
+                        )}
+                      </td>
+
+                      {/* Role */}
+                      <td className="px-4 py-3.5">
+                        <span className={user.role === "admin" ? "status-chip status-chip-info" : "status-chip status-chip-neutral"}>
+                          {user.role === "admin" ? "Admin" : "Employee"}
+                        </span>
+                      </td>
+
+                      {/* Face status */}
+                      <td className="px-4 py-3.5">
+                        <span className={user.hasFace ? "status-chip status-chip-success" : "status-chip status-chip-warning"}>
+                          {user.hasFace ? "Registered" : "Pending"}
+                        </span>
+                      </td>
+
+                      {/* Joined date */}
+                      <td className="px-4 py-3.5 text-xs text-slate-500">
+                        {formatJoinedDate(user.createdAt)}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="px-4 py-3.5 text-right">
+                        {user.role !== "admin" && !user.isDeleted ? (
+                          <button
+                            onClick={() => handleDelete(user._id, user.name)}
+                            className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-100"
+                          >
+                            Deactivate
+                          </button>
+                        ) : (
+                          <span className="text-xs text-slate-300">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </div>
-        </section>
+        </div>
       </div>
     </PageWrapper>
   );

@@ -38,6 +38,10 @@ export function getReasonLabel(reason) {
       return "Location Verification Failed";
     case ATTENDANCE_REASON.AUTO_ABSENT:
       return "Auto-Absent";
+    case "window_not_open":
+      return "Window Not Open";
+    case "window_closed":
+      return "Window Closed";
     default:
       return "";
   }
@@ -66,9 +70,28 @@ export function getReasonClasses(reason) {
       return "status-chip status-chip-danger";
     case ATTENDANCE_REASON.AUTO_ABSENT:
       return "status-chip status-chip-neutral";
-    default:
+    case "window_not_open":
+    case "window_closed":
       return "status-chip status-chip-neutral";
+    default:
+      return "";
   }
+}
+
+/**
+ * Converts a 24-hour "HH:MM" string (as stored in the DB / returned by API)
+ * into a 12-hour display string like "02:30 PM".
+ * Safe to call with null/undefined — returns "--:--" as fallback.
+ */
+export function formatTime12h(hhmm) {
+  if (!hhmm || typeof hhmm !== "string") return "--:--";
+  const [hourStr, minuteStr] = hhmm.split(":");
+  const hour = parseInt(hourStr, 10);
+  const minute = minuteStr ?? "00";
+  if (!Number.isFinite(hour)) return "--:--";
+  const period = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${String(hour12).padStart(2, "0")}:${minute} ${period}`;
 }
 
 export function formatRecordSummary(record) {
@@ -77,7 +100,7 @@ export function formatRecordSummary(record) {
   }
 
   if (record.status === ATTENDANCE_STATUS.PRESENT) {
-    return `Recorded at ${record.time}`;
+    return `Recorded at ${formatTime12h(record.time)}`;
   }
 
   if (record.reason === ATTENDANCE_REASON.OUTSIDE_LOCATION) {

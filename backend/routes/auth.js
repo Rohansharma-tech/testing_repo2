@@ -31,6 +31,10 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "Invalid email or password." });
     }
 
+    if (user.isDeleted) {
+      return res.status(403).json({ message: "This account has been deactivated. Please contact your administrator." });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ message: "Invalid email or password." });
@@ -70,6 +74,10 @@ router.get("/me", protect, async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ message: "User not found." });
+    }
+
+    if (user.isDeleted) {
+      return res.status(403).json({ message: "This account has been deactivated." });
     }
 
     return res.json({

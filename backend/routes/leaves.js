@@ -7,6 +7,7 @@ const router = express.Router();
 const LeaveRequest = require("../models/LeaveRequest");
 const Attendance = require("../models/Attendance");
 const { protect, adminOnly } = require("../middleware/auth");
+const { getDateTimeParts } = require("../utils/attendance");
 
 router.use(protect);
 
@@ -16,6 +17,17 @@ router.post("/", async (req, res) => {
   if (!date || !reason) {
     return res.status(400).json({ message: "Date and reason are required." });
   }
+
+  // ── Future-only validation ────────────────────────────────────────────────
+  // Leave requests are only allowed for future dates (not today, not past).
+  const { date: todayDate } = getDateTimeParts();
+  if (date <= todayDate) {
+    return res.status(400).json({
+      message: "Leave can only be applied for future dates. Same-day and past leave requests are not allowed.",
+      code: "LEAVE_DATE_NOT_FUTURE",
+    });
+  }
+  // ── End validation ────────────────────────────────────────────────────────
 
   try {
     const existingLeave = await LeaveRequest.findOne({ userId: req.user.id, date });
@@ -58,9 +70,15 @@ router.get("/my", async (req, res) => {
 router.get("/all", adminOnly, async (req, res) => {
   try {
     const leaves = await LeaveRequest.find()
-      .populate("userId", "name email department profileImage")
+      .populate({
+        path: "userId",
+        match: { isDeleted: { $ne: true } },
+        select: "name email department profileImage",
+      })
       .sort({ createdAt: -1 });
-    return res.json(leaves);
+    // Remove records whose user has been soft-deleted
+    const visible = leaves.filter((l) => l.userId !== null);
+    return res.json(visible);
   } catch (err) {
     return res.status(500).json({ message: "Failed to fetch leave requests." });
   }

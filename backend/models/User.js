@@ -56,6 +56,18 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // ── Soft-delete ────────────────────────────────────────────────────────────
+    // When true the user account is deactivated (not physically removed).
+    // All queries should filter { isDeleted: { $ne: true } } for "active" users.
+    // Historical attendance records are preserved and remain queryable by admin.
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

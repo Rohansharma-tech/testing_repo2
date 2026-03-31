@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import api from "../api/axios";
 import { AttendanceReasonBadge, AttendanceStatusBadge } from "../components/AttendanceBadges";
 import PageWrapper from "../components/PageWrapper";
+import { formatTime12h } from "../utils/attendance";
 
 // ─── Export helpers ───────────────────────────────────────────────────────────
 
@@ -191,8 +192,8 @@ export default function AttendanceTablePage() {
       try {
         const res = await api.get("/attendance/all");
         setRecords(res.data);
-      } catch (err) {
-        console.error("Attendance fetch error:", err);
+      } catch {
+        // silently ignore — page renders with empty state
       } finally {
         setLoading(false);
       }
@@ -415,7 +416,7 @@ export default function AttendanceTablePage() {
                         )}
                         <div className="mt-3 grid gap-2 text-sm text-slate-500 sm:grid-cols-2">
                           <p>Date: {record.date}</p>
-                          <p>Time: {record.time || "--:--"}</p>
+                          <p>Time: {record.time ? formatTime12h(record.time) : "--:--"}</p>
                           <p>
                             Coordinates:{" "}
                             {record.latitude !== null && record.longitude !== null

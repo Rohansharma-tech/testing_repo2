@@ -4,7 +4,7 @@ import api from "../api/axios";
 import { AttendanceReasonBadge, AttendanceStatusBadge } from "../components/AttendanceBadges";
 import PageWrapper from "../components/PageWrapper";
 import { useAuth } from "../context/AuthContext";
-import { ATTENDANCE_STATUS, formatRecordSummary } from "../utils/attendance";
+import { ATTENDANCE_STATUS, formatRecordSummary, formatTime12h } from "../utils/attendance";
 
 // ─── User Avatar ──────────────────────────────────────────────────────────────
 
@@ -70,8 +70,8 @@ export default function UserDashboard() {
             (record) => record.status === ATTENDANCE_STATUS.PRESENT && record.date.startsWith(currentMonth)
           ).length
         );
-      } catch (err) {
-        console.error("Dashboard fetch error:", err);
+      } catch {
+        // silently ignore — page renders with empty state
       } finally {
         setLoading(false);
       }
@@ -111,7 +111,7 @@ export default function UserDashboard() {
           <div className="grid gap-4 md:grid-cols-3">
             <div className="card md:col-span-2 flex flex-col items-center text-center p-8">
               <p className="section-label w-full text-left mb-2">Today</p>
-              
+
               <div className="mt-2 text-center">
                 <div className="inline-block rounded-full ring-4 ring-white shadow-md">
                   <UserAvatar user={user} size="xl" />
@@ -220,7 +220,7 @@ export default function UserDashboard() {
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <p className="text-sm font-semibold text-slate-900">{formatFriendlyDate(record.date)}</p>
-                        <p className="mt-1 text-sm text-slate-500">{record.time ? `Recorded at ${record.time}` : "No time available"}</p>
+                        <p className="mt-1 text-sm text-slate-500">{record.time ? `Recorded at ${formatTime12h(record.time)}` : "No time available"}</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <AttendanceStatusBadge status={record.status} />

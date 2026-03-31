@@ -36,6 +36,34 @@ const appealSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+
+    // ── Re-validation (when admin approves with required re-check) ────────────
+    // When requiresRevalidation=true, the attendance record stays ABSENT until
+    // the user successfully marks attendance within the appeal window.
+    requiresRevalidation: {
+      type: Boolean,
+      default: false,
+    },
+    // YYYY-MM-DD — the date on which re-validation must be completed
+    appealDate: {
+      type: String,
+      default: null,
+    },
+    // "HH:MM" — the time window for re-validation marking
+    appealStartTime: {
+      type: String,
+      default: null,
+    },
+    appealEndTime: {
+      type: String,
+      default: null,
+    },
+    // Tracks completion of the re-validation flow
+    revalidationStatus: {
+      type: String,
+      enum: [null, "pending", "completed", "missed"],
+      default: null,
+    },
   },
   {
     timestamps: true,

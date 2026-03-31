@@ -71,7 +71,9 @@ function sanitize(user) {
 // ── GET /api/users ────────────────────────────────────────────────────────────
 router.get("/", protect, adminOnly, async (req, res) => {
   try {
-    const users = await User.find().select("-password -faceDescriptor").sort({ createdAt: -1 });
+    const users = await User.find({ isDeleted: { $ne: true } })
+      .select("-password -faceDescriptor")
+      .sort({ createdAt: -1 });
     const result = users.map((u) => {
       const obj = u.toObject();
       obj.profileImageUrl = avatarUrl(obj.profileImage);
@@ -86,7 +88,10 @@ router.get("/", protect, adminOnly, async (req, res) => {
 // ── GET /api/users/departments ────────────────────────────────────────────────
 router.get("/departments", protect, adminOnly, async (req, res) => {
   try {
-    const departments = await User.distinct("department", { department: { $ne: null } });
+    const departments = await User.distinct("department", {
+      department: { $ne: null },
+      isDeleted: { $ne: true },
+    });
     return res.json(departments.sort());
   } catch (err) {
     return res.status(500).json({ message: "Failed to fetch departments." });
@@ -171,6 +176,10 @@ router.post(
 );
 
 // ── DELETE /api/users/:id ─────────────────────────────────────────────────────
+// Soft-delete: sets isDeleted=true and records deletedAt timestamp.
+// The User document is retained so that existing Attendance records can still
+// be populated with name/email. The profile image is kept on disk for the same
+// reason (attendance table may display the avatar for historical entries).
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -178,17 +187,18 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     if (user.role === "admin") {
       return res.status(403).json({ message: "Admin accounts cannot be deleted." });
     }
-
-    // Remove profile photo from disk if present
-    if (user.profileImage) {
-      const filePath = path.join(__dirname, "..", user.profileImage);
-      fs.unlink(filePath, () => {}); // non-fatal
+    if (user.isDeleted) {
+      return res.status(409).json({ message: "User is already deactivated." });
     }
 
-    await User.findByIdAndDelete(req.params.id);
-    return res.json({ message: "User deleted successfully." });
+    user.isDeleted = true;
+    user.deletedAt = new Date();
+    await user.save();
+
+    return res.json({ message: "User deactivated successfully. Historical records are preserved." });
   } catch (err) {
-    return res.status(500).json({ message: "Failed to delete user." });
+    console.error("Soft-delete user error:", err);
+    return res.status(500).json({ message: "Failed to deactivate user." });
   }
 });
 

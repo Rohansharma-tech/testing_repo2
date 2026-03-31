@@ -14,7 +14,8 @@ const organizationSettingsSchema = new mongoose.Schema(
       immutable: true,
     },
 
-    // ── Cutoff ────────────────────────────────────────────────────────────────
+    // ── Cutoff / Attendance Window ─────────────────────────────────────────────
+    // Legacy field — kept for backward-compat. New code uses attendanceEndTime.
     cutoffTime: {
       type: String,
       default: null,
@@ -33,6 +34,33 @@ const organizationSettingsSchema = new mongoose.Schema(
     cutoffEnabled: {
       type: Boolean,
       default: false,
+    },
+
+    // ── Attendance Time Window (new) ───────────────────────────────────────────
+    // Users cannot mark attendance BEFORE attendanceStartTime.
+    // Users cannot mark attendance AFTER  attendanceEndTime.
+    // Auto-absent cron fires at attendanceEndTime (preferred over cutoffTime).
+    attendanceStartTime: {
+      type: String,
+      default: null,
+      validate: {
+        validator(value) {
+          if (value === null || value === undefined) return true;
+          return /^([01]\d|2[0-3]):([0-5]\d)$/.test(value);
+        },
+        message: "attendanceStartTime must be in HH:MM 24-hour format.",
+      },
+    },
+    attendanceEndTime: {
+      type: String,
+      default: null,
+      validate: {
+        validator(value) {
+          if (value === null || value === undefined) return true;
+          return /^([01]\d|2[0-3]):([0-5]\d)$/.test(value);
+        },
+        message: "attendanceEndTime must be in HH:MM 24-hour format.",
+      },
     },
 
     // ── Geofence (DB-stored override) ─────────────────────────────────────────

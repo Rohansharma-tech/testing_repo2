@@ -63,7 +63,7 @@ const attendanceSchema = new mongoose.Schema(
 
     source: {
       type: String,
-      enum: ["normal", "leave", "appeal", "cutoff"],
+      enum: ["normal", "leave", "appeal", "cutoff", "auto_cutoff", "appeal_approval"],
       default: "normal",
     },
 
@@ -76,6 +76,8 @@ const attendanceSchema = new mongoose.Schema(
         "location_stale",
         "location_tampering",
         "auto_absent",
+        "window_not_open",   // blocked because attendanceStartTime not reached yet
+        "window_closed",     // blocked because attendanceEndTime already passed
       ],
       default: null,
     },

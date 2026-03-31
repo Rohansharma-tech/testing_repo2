@@ -41,18 +41,15 @@ function Avatar({ user, size = "md" }) {
     : "?";
 
   const src = resolveAvatarUrl(user);
+  const [broken, setBroken] = useState(false);
 
-  if (src) {
+  if (src && !broken) {
     return (
       <img
         src={src}
         alt={user?.name ?? "Profile"}
         className={`${cls} border border-slate-200`}
-        onError={(e) => {
-          // Fall back to initials on broken image
-          e.currentTarget.style.display = "none";
-          e.currentTarget.nextSibling.style.display = "flex";
-        }}
+        onError={() => setBroken(true)}
       />
     );
   }

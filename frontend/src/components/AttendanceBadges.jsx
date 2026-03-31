@@ -14,9 +14,9 @@ export function AttendanceStatusBadge({ status }) {
 }
 
 export function AttendanceReasonBadge({ reason }) {
-  if (!reason) {
-    return null;
-  }
-
-  return <span className={getReasonClasses(reason)}>{getReasonLabel(reason)}</span>;
+  if (!reason) return null;
+  const label = getReasonLabel(reason);
+  if (!label) return null;
+  return <span className={getReasonClasses(reason)}>{label}</span>;
 }
+
