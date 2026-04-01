@@ -1,19 +1,11 @@
 // src/context/AuthContext.jsx — Global Authentication State
+// JWT lives in an HttpOnly cookie — never touched by JS.
+// User profile is kept only in React state (memory), not localStorage.
 
 import { createContext, useContext, useState, useEffect } from "react";
 import api from "../api/axios";
 
 const AuthContext = createContext(null);
-
-function readStoredUser() {
-  try {
-    const storedUser = localStorage.getItem("user");
-    return storedUser ? JSON.parse(storedUser) : null;
-  } catch {
-    localStorage.removeItem("user");
-    return null;
-  }
-}
 
 /** Normalize the raw API response into the shape the app expects. */
 function normalizeUser(data) {
@@ -23,6 +15,7 @@ function normalizeUser(data) {
     email: data.email,
     role: data.role,
     hasFace: data.hasFace,
+    department: data.department ?? null,
     profileImage: data.profileImage ?? null,       // relative DB path or null
     profileImageUrl: data.profileImageUrl ?? null, // absolute URL returned by API
   };
@@ -32,28 +25,18 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // On mount: hit /auth/me — if the HttpOnly cookie is valid the server
+  // returns the user profile; if not (no cookie / expired) it returns 401
+  // and the axios interceptor redirects to /login.
   useEffect(() => {
     let isMounted = true;
 
     async function restoreSession() {
-      const storedUser = readStoredUser();
-      const token = localStorage.getItem("token");
-
-      if (!token) {
-        if (isMounted) setLoading(false);
-        return;
-      }
-
-      if (storedUser && isMounted) setUser(storedUser);
-
       try {
         const res = await api.get("/auth/me");
-        const normalized = normalizeUser(res.data);
-        localStorage.setItem("user", JSON.stringify(normalized));
-        if (isMounted) setUser(normalized);
+        if (isMounted) setUser(normalizeUser(res.data));
       } catch {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
+        // 401 → no valid session, stay on login page
         if (isMounted) setUser(null);
       } finally {
         if (isMounted) setLoading(false);
@@ -65,27 +48,27 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = async (email, password) => {
+    // Server sets the HttpOnly cookie; response body contains only user data
     const res = await api.post("/auth/login", { email, password });
-    const { token, user: userData } = res.data;
-    const normalized = normalizeUser(userData);
-    localStorage.setItem("token", token);
-    localStorage.setItem("user", JSON.stringify(normalized));
+    const normalized = normalizeUser(res.data.user);
     setUser(normalized);
     return normalized;
   };
 
-  const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    setUser(null);
+  const logout = async () => {
+    try {
+      // Tell the server to clear the HttpOnly cookie
+      await api.post("/auth/logout");
+    } catch {
+      // Even if the request fails, clear local state
+    } finally {
+      setUser(null);
+      window.location.href = "/login";
+    }
   };
 
   const updateUser = (updates) => {
-    setUser((current) => {
-      const updated = { ...current, ...updates };
-      localStorage.setItem("user", JSON.stringify(updated));
-      return updated;
-    });
+    setUser((current) => ({ ...current, ...updates }));
   };
 
   return (

@@ -5,6 +5,7 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
 const dotenv = require("dotenv");
 const path = require("path");
 
@@ -13,8 +14,29 @@ dotenv.config();
 const app = express();
 
 // ---- Middleware ----
-app.use(cors({ origin: "*" }));
+// CORS: Allow requests only from known frontend origins.
+// FRONTEND_URL is set in production to the Netlify URL (no trailing slash).
+// Multiple origins are supported by splitting on comma, e.g.:
+//   FRONTEND_URL=https://your-site.netlify.app,http://localhost:5173
+const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:5173")
+  .split(",")
+  .map((o) => o.trim());
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow server-to-server calls (no origin) and whitelisted origins
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS: Origin '${origin}' is not allowed`));
+    }
+  },
+  credentials: true,          // Required for HttpOnly cookies
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
 app.use(express.json({ limit: "10mb" }));
+app.use(cookieParser());
 
 // ── Static file serving for uploaded profile images ───────────────────────────
 // Files stored in  backend/uploads/  are reachable at  GET /uploads/<filename>

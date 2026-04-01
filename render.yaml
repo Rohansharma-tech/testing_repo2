@@ -1,0 +1,34 @@
+# render.yaml — Infrastructure as Code for Render.com
+# This file auto-configures your Render Web Service when connected to your repo.
+# See: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: attendance-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # ── Set these in the Render Dashboard (DO NOT hard-code secrets here) ──
+      - key: MONGO_URI
+        sync: false          # Tells Render to prompt you for the value
+      - key: JWT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: GEOFENCE_LAT
+        value: 10.786760
+      - key: GEOFENCE_LNG
+        value: 78.689341
+      - key: GEOFENCE_RADIUS
+        value: 100
+      - key: MAX_LOCATION_ACCURACY_METERS
+        value: 200
+      - key: MAX_LOCATION_AGE_MS
+        value: 120000

@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment variables (NEVER commit these)
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Uploaded files (stored locally — use cloud storage in production)
+backend/uploads/profiles/*.jpg
+backend/uploads/profiles/*.jpeg
+backend/uploads/profiles/*.png
+backend/uploads/profiles/*.webp

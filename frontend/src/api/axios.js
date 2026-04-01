@@ -1,41 +1,31 @@
 // src/api/axios.js — Axios HTTP Client Setup
-// This file creates a pre-configured axios instance that:
-// 1. Points to our backend API
-// 2. Automatically attaches the JWT token to every request
+// The JWT lives in an HttpOnly cookie — the browser sends it automatically.
+// We never read or write the token from JS.
 
 import axios from "axios";
 
 // Create a custom axios instance
 const api = axios.create({
-  baseURL: "http://localhost:5000/api", // Backend API base URL
+  baseURL: import.meta.env.VITE_API_URL || "http://localhost:5000/api",
   headers: {
     "Content-Type": "application/json",
   },
+  // ← This is the key: tell the browser to include the HttpOnly cookie
+  //   on every request (same as `fetch` with `credentials: "include"`)
+  withCredentials: true,
 });
-
-// ---- Request Interceptor ----
-// Runs before every request — attaches JWT token from localStorage
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem("token");
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
 
 // ---- Response Interceptor ----
 // Handles 401 Unauthorized (expired/invalid token) globally
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     if (error.response?.status === 401) {
-      // Clear local storage and redirect to login
-      localStorage.removeItem("token");
-      localStorage.removeItem("user");
-      window.location.href = "/login";
+      // Cookie is gone / expired — redirect to login
+      // No localStorage to clean up anymore
+      if (window.location.pathname !== "/login" && window.location.pathname !== "/") {
+        window.location.href = "/login";
+      }
     }
     return Promise.reject(error);
   }

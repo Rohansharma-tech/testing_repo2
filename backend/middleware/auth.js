@@ -5,23 +5,27 @@
 const jwt = require("jsonwebtoken");
 
 // ---- Protect Route (any logged-in user) ----
-// Attach this to any route that requires login
+// Reads the JWT from the HttpOnly cookie (set at login).
+// Falls back to the Authorization header for backward compatibility.
 const protect = (req, res, next) => {
-  // Get token from Authorization header: "Bearer <token>"
-  const authHeader = req.headers.authorization;
+  // Primary: read from HttpOnly cookie (secure path)
+  let token = req.cookies?.token;
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  // Fallback: Authorization header (e.g. curl / Postman during dev)
+  if (!token) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.split(" ")[1];
+    }
+  }
+
+  if (!token) {
     return res.status(401).json({ message: "Not authorized. No token provided." });
   }
 
-  const token = authHeader.split(" ")[1];
-
   try {
-    // Verify and decode the token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // Attach user info to request object for use in route handlers
-    req.user = decoded; // { id, email, role }
+    req.user = decoded; // { id, role }
     next();
   } catch (err) {
     return res.status(401).json({ message: "Token is invalid or expired." });

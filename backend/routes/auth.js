@@ -10,11 +10,18 @@ const User = require("../models/User");
 const { protect } = require("../middleware/auth");
 
 // ── Shared helper ─────────────────────────────────────────────────────────────
-// Converts the DB profileImage path into a public URL the frontend can use.
 function profileImageUrl(profileImage) {
   if (!profileImage) return null;
   return `/${profileImage}`;
 }
+
+// Cookie options — shared between login and logout
+const COOKIE_OPTIONS = {
+  httpOnly: true,          // ← JS cannot read this cookie (blocks XSS theft)
+  secure: process.env.NODE_ENV === "production",  // HTTPS-only in prod
+  sameSite: "strict",      // ← blocks CSRF
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
+};
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
 router.post("/login", async (req, res) => {
@@ -46,8 +53,11 @@ router.post("/login", async (req, res) => {
       { expiresIn: "7d" },
     );
 
+    // Set token in HttpOnly cookie — never exposed to JS
+    res.cookie("token", token, COOKIE_OPTIONS);
+
+    // Return the user profile (no token in body)
     return res.json({
-      token,
       user: {
         id: user._id,
         name: user.name,
@@ -62,6 +72,13 @@ router.post("/login", async (req, res) => {
   } catch (err) {
     return res.status(500).json({ message: "Login failed." });
   }
+});
+
+// ── POST /api/auth/logout ─────────────────────────────────────────────────────
+router.post("/logout", (_req, res) => {
+  // Clear the cookie by setting maxAge to 0
+  res.cookie("token", "", { ...COOKIE_OPTIONS, maxAge: 0 });
+  return res.json({ message: "Logged out successfully." });
 });
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
@@ -88,7 +105,7 @@ router.get("/me", protect, async (req, res) => {
       hasFace: user.hasFace,
       department: user.department,
       profileImage: user.profileImage,
-      profileImageUrl: profileImageUrl(user.profileImage),   // ← key fix
+      profileImageUrl: profileImageUrl(user.profileImage),
     });
   } catch (err) {
     return res.status(500).json({ message: "Failed to fetch user." });
