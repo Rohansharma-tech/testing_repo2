@@ -16,10 +16,14 @@ function profileImageUrl(profileImage) {
 }
 
 // Cookie options — shared between login and logout
+// In production (cross-origin: Netlify → Render), cookies MUST use:
+//   SameSite=None + Secure=true  → browser allows cross-origin cookies
+// In local dev (same origin via Vite proxy), SameSite=Lax works fine
+const isProduction = process.env.NODE_ENV === "production";
 const COOKIE_OPTIONS = {
-  httpOnly: true,          // ← JS cannot read this cookie (blocks XSS theft)
-  secure: process.env.NODE_ENV === "production",  // HTTPS-only in prod
-  sameSite: "strict",      // ← blocks CSRF
+  httpOnly: true,           // JS cannot read this cookie (blocks XSS theft)
+  secure: isProduction,     // HTTPS-only in production
+  sameSite: isProduction ? "none" : "lax",  // "none" required for cross-origin
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
 };
 
