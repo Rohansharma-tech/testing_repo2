@@ -28,6 +28,13 @@
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
+# ─── API Reverse Proxy (Bypasses Third-Party Cookie Blocks) ────────────────────
+[[redirects]]
+  from = "/api/*"
+  to = "https://testing-repo2-3nrh.onrender.com/api/:splat"
+  status = 200
+  force = true
+
 # ─── SPA Fallback — React Router must handle all routes ────────────────────────
 # IMPORTANT: This must be the LAST rule in this file
 [[redirects]]
