@@ -147,24 +147,26 @@ async function getPendingRevalidationAppeal(userId, date) {
 // POST /api/attendance/location-check
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/location-check", async (req, res) => {
-  const geofence = getGeofenceConfig();
-  if (!isGeofenceConfigured(geofence)) {
-    return res.status(500).json({ message: "Geofence is not configured.", allowed: false });
-  }
-
-  const validation = validateLocationPayload(req.body, geofence);
-  if (!validation.ok) {
-    return res.status(validation.statusCode).json({
-      allowed: false,
-      message: validation.message,
-      code: validation.code,
-      detail: validation.detail,
-      accuracyMeters: validation.accuracyMeters,
-      requiredAccuracyMeters: validation.requiredAccuracyMeters,
-    });
-  }
-
   try {
+    const settings = await OrganizationSettings.getSingleton();
+    const geofence = getGeofenceConfig(settings);
+
+    if (!isGeofenceConfigured(geofence)) {
+      return res.status(500).json({ message: "Geofence is not configured.", allowed: false });
+    }
+
+    const validation = validateLocationPayload(req.body, geofence);
+    if (!validation.ok) {
+      return res.status(validation.statusCode).json({
+        allowed: false,
+        message: validation.message,
+        code: validation.code,
+        detail: validation.detail,
+        accuracyMeters: validation.accuracyMeters,
+        requiredAccuracyMeters: validation.requiredAccuracyMeters,
+      });
+    }
+
     const dateParts = getDateTimeParts();
     const existingRecord = await Attendance.findOne({ userId: req.user.id, date: dateParts.date });
 
@@ -177,7 +179,6 @@ router.post("/location-check", async (req, res) => {
     }
 
     // ── Attendance time window check ──────────────────────────────────────────
-    const settings = await OrganizationSettings.getSingleton();
     const timeZone = settings.cutoffTimeZone || process.env.APP_TIMEZONE || "Asia/Kolkata";
     const currentHHMM = getCurrentTimeHHMM(timeZone);
 
@@ -275,24 +276,26 @@ router.post("/location-check", async (req, res) => {
 // POST /api/attendance/mark
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/mark", async (req, res) => {
-  const geofence = getGeofenceConfig();
-  if (!isGeofenceConfigured(geofence)) {
-    return res.status(500).json({ message: "Geofence is not configured." });
-  }
-
-  const validation = validateLocationPayload(req.body, geofence);
-  if (!validation.ok) {
-    return res.status(validation.statusCode).json({
-      message: validation.message,
-      code: validation.code,
-      allowed: false,
-      detail: validation.detail,
-      accuracyMeters: validation.accuracyMeters,
-      requiredAccuracyMeters: validation.requiredAccuracyMeters,
-    });
-  }
-
   try {
+    const settings = await OrganizationSettings.getSingleton();
+    const geofence = getGeofenceConfig(settings);
+
+    if (!isGeofenceConfigured(geofence)) {
+      return res.status(500).json({ message: "Geofence is not configured." });
+    }
+
+    const validation = validateLocationPayload(req.body, geofence);
+    if (!validation.ok) {
+      return res.status(validation.statusCode).json({
+        message: validation.message,
+        code: validation.code,
+        allowed: false,
+        detail: validation.detail,
+        accuracyMeters: validation.accuracyMeters,
+        requiredAccuracyMeters: validation.requiredAccuracyMeters,
+      });
+    }
+
     const user = await User.findById(req.user.id).select("hasFace faceDescriptor");
     if (!user) return res.status(404).json({ message: "User not found." });
     if (!user.hasFace || !Array.isArray(user.faceDescriptor) || user.faceDescriptor.length === 0) {
@@ -311,7 +314,6 @@ router.post("/mark", async (req, res) => {
     }
 
     // ── Attendance time window check ──────────────────────────────────────────
-    const settings = await OrganizationSettings.getSingleton();
     const timeZone = settings.cutoffTimeZone || process.env.APP_TIMEZONE || "Asia/Kolkata";
     const currentHHMM = getCurrentTimeHHMM(timeZone);
 
