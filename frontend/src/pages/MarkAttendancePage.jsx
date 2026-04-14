@@ -111,6 +111,89 @@ function acquireBestLocation({ requiredAccuracyMeters, onProgress, timeoutMs = L
   });
 }
 
+// ── Session Badge ─────────────────────────────────────────────────────────────
+
+function SessionBadge({ session }) {
+  if (!session) return null;
+  const isWorkStart = session === "morning";
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ${
+      isWorkStart
+        ? "bg-blue-50 text-blue-700 ring-blue-200"
+        : "bg-indigo-50 text-indigo-700 ring-indigo-200"
+    }`}>
+      {isWorkStart ? "Work Start Session" : "Work End Session"}
+    </span>
+  );
+}
+
+// ── Session Progress Strip ────────────────────────────────────────────────────
+
+function SessionProgress({ sessions, halfDayLeave }) {
+  if (!sessions) return null;
+  const { morning, evening } = sessions;
+  if (!morning.enabled && !evening.enabled) return null;
+
+  const SessionDot = ({ label, enabled, marked, isLeave, startTime, endTime }) => {
+    if (!enabled && !isLeave) return null;
+    return (
+      <div className="flex items-center gap-2 text-sm">
+        <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${
+          isLeave
+            ? "bg-violet-400 text-white"
+            : marked
+              ? "bg-emerald-500 text-white"
+              : "bg-slate-200 text-slate-500"
+        }`}>
+          {isLeave ? "L" : marked ? "" : ""}
+        </span>
+        <div>
+          <span className={`font-medium ${
+            isLeave ? "text-violet-700" : marked ? "text-emerald-700" : "text-slate-600"
+          }`}>{label}</span>
+          {isLeave && <span className="ml-1.5 text-xs text-violet-500">Half-Day Leave</span>}
+          {!isLeave && startTime && endTime && (
+            <span className="ml-1.5 text-xs text-slate-400">{formatTime12h(startTime)}&ndash;{formatTime12h(endTime)}</span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="card py-4">
+      <p className="section-label mb-3">Today's Progress</p>
+      <div className="flex flex-wrap gap-4">
+        <SessionDot
+          label="Work Start"
+          enabled={morning.enabled}
+          marked={morning.marked}
+          isLeave={morning.isLeave || (!morning.enabled && halfDayLeave)}
+          startTime={morning.startTime}
+          endTime={morning.endTime}
+        />
+        {(morning.enabled || halfDayLeave) && evening.enabled && (
+          <div className="flex items-center text-slate-300">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </div>
+        )}
+        <SessionDot
+          label="Work End"
+          enabled={evening.enabled}
+          marked={evening.marked}
+          isLeave={evening.isLeave}
+          startTime={evening.startTime}
+          endTime={evening.endTime}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── Main Component ────────────────────────────────────────────────────────────
+
 export default function MarkAttendancePage() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -126,12 +209,17 @@ export default function MarkAttendancePage() {
   const [geofenceInfo, setGeofenceInfo] = useState(null);
   const [locationPayload, setLocationPayload] = useState(null);
   const [windowInfo, setWindowInfo] = useState(null);
+  const [activeSession, setActiveSession] = useState(null);
+  const [sessionSummary, setSessionSummary] = useState(null);
+  const [halfDayLeave, setHalfDayLeave] = useState(false);
+  const [halfDayLeaveSession, setHalfDayLeaveSession] = useState(null); // "morning" | "evening" | null
   const [todayState, setTodayState] = useState({
     status: ATTENDANCE_STATUS.NOT_MARKED,
     record: null,
     marked: false,
     canRetry: true,
     cutoffPassed: false,
+    allSessionsComplete: false,
   });
 
   const { user } = useAuth();
@@ -151,12 +239,33 @@ export default function MarkAttendancePage() {
         setGeofenceInfo(geofenceRes.data);
         setTodayState(todayRes.data);
         setWindowInfo(todayRes.data.windowInfo || null);
+        setActiveSession(todayRes.data.activeSession || "morning");
+        setSessionSummary(todayRes.data.sessions || null);
+        setHalfDayLeave(!!todayRes.data.halfDayLeave);
+        setHalfDayLeaveSession(todayRes.data.halfDayLeaveSession || null);
 
-        if (todayRes.data.status === ATTENDANCE_STATUS.PRESENT) {
+        if (todayRes.data.allSessionsComplete) {
           setStage("done");
-          setStatusMessage(`Attendance already marked at ${formatTime12h(todayRes.data.record?.time)}.`);
+          const workStart = todayRes.data.morningRecord;
+          const workEnd = todayRes.data.eveningRecord;
+          const times = [workStart, workEnd]
+            .filter((r) => r?.status === "present")
+            .map((r) => formatTime12h(r.time))
+            .join(" & ");
+          setStatusMessage(`All attendance complete for today${times ? ` (${times})` : ""}.`);
           return;
         }
+
+        if (todayRes.data.status === ATTENDANCE_STATUS.PRESENT && !todayRes.data.allSessionsComplete) {
+          // Current session done, next session may be pending
+          const sess = todayRes.data.sessions;
+          if (sess?.morning?.marked && sess?.evening?.enabled && !sess?.evening?.marked) {
+            setStage("session_waiting");
+            setStatusMessage(`Work Start attendance done. Work End window opens at ${formatTime12h(sess.evening.startTime)}.`);
+            return;
+          }
+        }
+
         if (todayRes.data.cutoffPassed) {
           setStage("blocked");
           setStatusMessage("The attendance window has closed for today. You were automatically marked absent at the cutoff time.");
@@ -165,12 +274,12 @@ export default function MarkAttendancePage() {
         const wi = todayRes.data.windowInfo;
         if (wi?.status === "before_window") {
           setStage("window_waiting");
-          setStatusMessage(`Attendance window opens at ${formatTime12h(wi.startTime)}. Please come back then.`);
+          setStatusMessage(`${wi.session === "evening" ? "Work End" : "Work Start"} attendance window opens at ${formatTime12h(wi.startTime)}. Please come back then.`);
           return;
         }
         if (wi?.status === "after_window") {
           setStage("blocked");
-          setStatusMessage(`The attendance window closed at ${wi.endTime}. You were or will be marked absent automatically.`);
+          setStatusMessage(`The attendance window closed at ${formatTime12h(wi.endTime)}. You were or will be marked absent automatically.`);
           return;
         }
         if (todayRes.data.record?.reason === ATTENDANCE_REASON.OUTSIDE_LOCATION) {
@@ -181,16 +290,29 @@ export default function MarkAttendancePage() {
           setStatusMessage("Location and face verification are ready.");
         }
 
-        await Promise.all([
-          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-        ]);
-        if (!cancelled) setModelsLoaded(true);
-      } catch {
+        // Load face-api models separately — a failure here should NOT reset the session stage
+        try {
+          await Promise.all([
+            faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+          ]);
+          if (!cancelled) setModelsLoaded(true);
+        } catch {
+          if (!cancelled) {
+            // Models failed — button will be disabled but window/session state stays correct
+            setStatusMessage((prev) =>
+              prev + " (Face model failed to load — refresh to retry.)"
+            );
+          }
+        }
+      } catch (err) {
         if (!cancelled) {
           setStage("error");
-          setStatusMessage("Unable to initialize attendance verification.");
+          setStatusMessage(
+            err?.response?.data?.message ||
+            "Unable to initialize attendance verification. Please refresh the page."
+          );
         }
       }
     }
@@ -259,11 +381,25 @@ export default function MarkAttendancePage() {
     setStatusMessage(responseData.message || "You are not in the allowed location");
   };
 
+  const refreshTodayState = async () => {
+    try {
+      const todayRes = await api.get("/attendance/today");
+      setTodayState(todayRes.data);
+      setWindowInfo(todayRes.data.windowInfo || null);
+      setActiveSession(todayRes.data.activeSession || "morning");
+      setSessionSummary(todayRes.data.sessions || null);
+      setHalfDayLeave(!!todayRes.data.halfDayLeave);
+      setHalfDayLeaveSession(todayRes.data.halfDayLeaveSession || null);
+      return todayRes.data;
+    } catch {
+      return null;
+    }
+  };
+
   const startAttendanceFlow = async () => {
     if (!user?.hasFace) { showToast("Register your face before marking attendance.", "warning"); return; }
-    if (todayState.status === ATTENDANCE_STATUS.PRESENT) {
+    if (todayState.allSessionsComplete) {
       setStage("done");
-      setStatusMessage(`Attendance already marked at ${formatTime12h(todayState.record?.time)}.`);
       return;
     }
     setBusy(true);
@@ -275,9 +411,17 @@ export default function MarkAttendancePage() {
       setStatusMessage("Validating your location against the allowed geofence...");
       const validation = await api.post("/attendance/location-check", currentLocation);
       if (validation.data.alreadyMarked) {
-        setTodayState({ status: validation.data.record?.status || ATTENDANCE_STATUS.PRESENT, record: validation.data.record || null, marked: true, canRetry: false });
-        setStage("done");
-        setStatusMessage(`Attendance already marked at ${formatTime12h(validation.data.record?.time)}.`);
+        const fresh = await refreshTodayState();
+        if (fresh?.allSessionsComplete) {
+          setStage("done");
+          setStatusMessage("All attendance complete for today.");
+        } else if (fresh?.sessions?.morning?.marked && fresh?.sessions?.evening?.enabled) {
+          setStage("session_waiting");
+          setStatusMessage(`Morning attendance done. Waiting for evening window to open.`);
+        } else {
+          setStage("done");
+          setStatusMessage(`Attendance already marked.`);
+        }
         return;
       }
       await startCamera();
@@ -349,9 +493,21 @@ export default function MarkAttendancePage() {
       setStatusMessage("Face verified. Submitting attendance...");
       const response = await api.post("/attendance/mark", locationPayload);
       stopCamera();
-      setTodayState({ status: response.data.record?.status || ATTENDANCE_STATUS.PRESENT, record: response.data.record || null, marked: true, canRetry: false });
-      setStage("done");
-      setStatusMessage(`Attendance marked successfully at ${formatTime12h(response.data.record?.time)}.`);
+
+      const fresh = await refreshTodayState();
+      const markedSession = response.data.session || activeSession;
+      const sessionLabel = markedSession === "evening" ? "Work End" : "Work Start";
+
+      if (fresh?.allSessionsComplete) {
+        setStage("done");
+        setStatusMessage(`All attendance complete for today! ${sessionLabel} marked at ${formatTime12h(response.data.record?.time)}.`);
+      } else if (fresh?.sessions?.morning?.marked && fresh?.sessions?.evening?.enabled && !fresh?.sessions?.evening?.marked) {
+        setStage("session_waiting");
+        setStatusMessage(`${sessionLabel} attendance marked at ${formatTime12h(response.data.record?.time)}. Work End window opens at ${formatTime12h(fresh.sessions.evening.startTime)}.`);
+      } else {
+        setStage("done");
+        setStatusMessage(`Attendance marked successfully at ${formatTime12h(response.data.record?.time)}.`);
+      }
       showToast("Attendance marked successfully.", "success");
     } catch (err) {
       const responseData = err.response?.data;
@@ -377,9 +533,14 @@ export default function MarkAttendancePage() {
         handleBlockedAttempt(responseData);
       } else if (responseData?.alreadyMarked) {
         stopCamera();
-        setTodayState({ status: responseData.record?.status || ATTENDANCE_STATUS.PRESENT, record: responseData.record || null, marked: true, canRetry: false, cutoffPassed: false });
-        setStage("done");
-        setStatusMessage(`Attendance already marked at ${formatTime12h(responseData.record?.time)}.`);
+        const fresh = await refreshTodayState();
+        if (fresh?.allSessionsComplete) {
+          setStage("done");
+          setStatusMessage("All attendance complete for today.");
+        } else {
+          setStage("done");
+          setStatusMessage(`Attendance already marked for this session.`);
+        }
       } else {
         setStage("error");
         setStatusMessage(message);
@@ -405,7 +566,7 @@ export default function MarkAttendancePage() {
     }
     if (windowInfo?.status === "after_window") {
       setStage("blocked");
-      setStatusMessage(`The attendance window closed at ${windowInfo.endTime}.`);
+      setStatusMessage(`The attendance window closed at ${formatTime12h(windowInfo.endTime)}.`);
       return;
     }
     setStage(todayState.status === ATTENDANCE_STATUS.ABSENT ? "blocked" : "idle");
@@ -416,21 +577,31 @@ export default function MarkAttendancePage() {
     );
   };
 
-  // ── Derived UI values (unchanged) ─────────────────────────────────────────
+  // ── Derived UI values ──────────────────────────────────────────────────────
   const stageTone =
     stage === "done" ? "status-chip status-chip-success"
     : stage === "blocked" ? "status-chip status-chip-warning"
-    : stage === "window_waiting" ? "status-chip status-chip-info"
+    : stage === "window_waiting" || stage === "session_waiting" ? "status-chip status-chip-info"
     : stage === "error" ? "status-chip status-chip-danger"
     : "status-chip status-chip-info";
 
   const isWindowWaiting = stage === "window_waiting";
+  const isSessionWaiting = stage === "session_waiting";
   const isDisabled =
     busy ||
     !modelsLoaded ||
-    todayState.status === ATTENDANCE_STATUS.PRESENT ||
+    todayState.allSessionsComplete ||
     todayState.cutoffPassed ||
-    isWindowWaiting;
+    isWindowWaiting ||
+    isSessionWaiting;
+
+  const buttonLabel =
+    busy ? "Processing..."
+    : todayState.allSessionsComplete ? "All attendance complete"
+    : todayState.cutoffPassed ? "Attendance window closed"
+    : isWindowWaiting ? `Opens at ${formatTime12h(windowInfo?.startTime)}`
+    : isSessionWaiting ? `Work End opens at ${formatTime12h(sessionSummary?.evening?.startTime)}`
+    : `Mark ${activeSession === "evening" ? "Work End" : "Work Start"} Attendance`;
 
   // ── JSX ───────────────────────────────────────────────────────────────────
   return (
@@ -447,7 +618,7 @@ export default function MarkAttendancePage() {
           <div className="card py-4">
             <p className="section-label">Today's Status</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <AttendanceStatusBadge status={todayState.status} />
+              <AttendanceStatusBadge status={todayState.allSessionsComplete ? "present" : todayState.status} />
               <AttendanceReasonBadge reason={todayState.record?.reason} />
             </div>
           </div>
@@ -461,6 +632,9 @@ export default function MarkAttendancePage() {
           </div>
         </div>
 
+        {/* ── Session progress bar ── */}
+        <SessionProgress sessions={sessionSummary} halfDayLeave={halfDayLeave} />
+
         {/* ── Main content ── */}
         <div className="grid gap-5 xl:grid-cols-[1fr_340px] items-start">
 
@@ -471,17 +645,33 @@ export default function MarkAttendancePage() {
             <div className="card">
               <div className="flex flex-wrap items-center gap-2">
                 <span className={stageTone}>
-                  {stage === "done" ? "Completed"
+                  {stage === "done" ? (todayState.allSessionsComplete ? "All Complete" : "Completed")
                     : stage === "blocked" ? "Blocked"
                     : stage === "window_waiting" ? "Waiting"
+                    : stage === "session_waiting" ? "Session Waiting"
                     : stage === "error" ? "Needs Attention"
                     : "Ready"}
                 </span>
+                {activeSession && (stage === "idle" || stage === "camera" || stage === "locating" || stage === "verifying" || stage === "submitting") && (
+                  <SessionBadge session={activeSession} />
+                )}
               </div>
               <p className="mt-3 text-sm text-slate-600">{statusMessage}</p>
 
+              {/* Half-day leave banner */}
+              {halfDayLeave && !todayState.allSessionsComplete && (
+                <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-3.5 text-sm text-violet-800">
+                  <p className="font-semibold">Half-Day Leave Approved</p>
+                  <p className="mt-1">
+                    {halfDayLeaveSession === "evening"
+                      ? "Your Work End session is waived for today. You only need to mark Work Start attendance."
+                      : "Your Work Start session is waived for today. You only need to mark Work End attendance."}
+                  </p>
+                </div>
+              )}
+
               {/* Window info banner */}
-              {windowInfo && !todayState.marked && (
+              {windowInfo && !todayState.allSessionsComplete && (
                 <div className={`mt-4 rounded-xl border p-3.5 text-sm ${
                   windowInfo.status === "before_window"
                     ? "border-blue-200 bg-blue-50 text-blue-800"
@@ -501,12 +691,20 @@ export default function MarkAttendancePage() {
                   ) : (
                     <>
                       <p className="font-semibold">
+                        {windowInfo.session === "evening" ? "Work End" : "Work Start"} Session:{" "}
                         {windowInfo.status === "before_window"
-                          ? `Attendance window opens at ${formatTime12h(windowInfo.startTime)}`
+                          ? `Opens at ${formatTime12h(windowInfo.startTime)}`
                           : windowInfo.status === "after_window"
-                            ? `Attendance window closed at ${formatTime12h(windowInfo.endTime)}`
-                            : `Attendance window: ${formatTime12h(windowInfo.startTime)} – ${formatTime12h(windowInfo.endTime)}`}
+                            ? `Closed at ${formatTime12h(windowInfo.endTime)}`
+                            : `${formatTime12h(windowInfo.startTime)} - ${formatTime12h(windowInfo.endTime)}`}
                       </p>
+                      {windowInfo.bothSessionsEnabled && windowInfo.morningStartTime && (
+                        <p className="mt-1 text-xs opacity-75">
+                          Work Start: {formatTime12h(windowInfo.morningStartTime)}-{formatTime12h(windowInfo.morningEndTime)}
+                          {" · "}
+                          Work End: {formatTime12h(windowInfo.eveningStartTime)}-{formatTime12h(windowInfo.eveningEndTime)}
+                        </p>
+                      )}
                       {windowInfo.status === "before_window" && (
                         <p className="mt-1 text-xs opacity-75">Button enables once the window opens.</p>
                       )}
@@ -523,7 +721,7 @@ export default function MarkAttendancePage() {
               )}
             </div>
 
-            {/* Camera — compact, centred, fixed height */}
+            {/* Camera */}
             <div className="card overflow-hidden p-0">
               <div className="border-b border-slate-100 px-5 py-3 flex items-center justify-between">
                 <p className="section-label">Face Verification Camera</p>
@@ -534,7 +732,6 @@ export default function MarkAttendancePage() {
                 )}
               </div>
 
-              {/* Fixed-height camera box — not full-bleed aspect ratio */}
               <div className="relative h-64 bg-slate-950 flex items-center justify-center overflow-hidden">
                 <video
                   ref={videoRef}
@@ -575,11 +772,7 @@ export default function MarkAttendancePage() {
                   </>
                 ) : (
                   <button onClick={startAttendanceFlow} disabled={isDisabled} className="btn-primary w-full disabled:opacity-50">
-                    {busy ? "Processing…"
-                      : todayState.status === ATTENDANCE_STATUS.PRESENT ? "Attendance completed"
-                      : todayState.cutoffPassed ? "Attendance window closed"
-                      : isWindowWaiting ? `Opens at ${formatTime12h(windowInfo?.startTime)}`
-                      : "Start attendance"}
+                    {buttonLabel}
                   </button>
                 )}
               </div>
@@ -627,12 +820,12 @@ export default function MarkAttendancePage() {
               </div>
               <ul className="divide-y divide-slate-100">
                 {[
+                  "Mark attendance twice daily — once for Work Start and once for Work End.",
                   "Blocked immediately if outside the configured geofence.",
                   "Low-accuracy, stale, or tampered GPS payloads are rejected.",
                   "Outside-location attempts are saved as absent records.",
                   "Returning inside the geofence allows a fresh retry.",
                   "Camera requires a secure URL and browser camera permission.",
-                  "Use a GPS-enabled device or move near a window for best accuracy.",
                 ].map((rule, i) => (
                   <li key={i} className="flex items-start gap-3 px-5 py-3 text-xs text-slate-500">
                     <span className="mt-0.5 flex-shrink-0 h-4 w-4 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-400">{i + 1}</span>

@@ -50,6 +50,62 @@ function checkTimeWindow(currentHHMM, startHHMM, endHHMM) {
   return "within_window";
 }
 
+/**
+ * Detect which session is currently active based on configured windows.
+ * Returns: { session: "morning"|"evening"|null, windowStatus, startTime, endTime }
+ *
+ * Logic:
+ *   - If current time is within the morning window → morning
+ *   - Else if current time is within the evening window → evening
+ *   - If current time is before morning window → morning (not yet open)
+ *   - If current time is between morning end and evening start → evening (not yet open)
+ *   - If current time is after evening end → null (both closed)
+ *   - If only morning is configured and window is open → morning
+ *   - If only evening is configured and window is open → evening
+ */
+function detectCurrentSession(settings, currentHHMM) {
+  const hasMorning = settings.attendanceStartTime || settings.attendanceEndTime;
+  const hasEvening = settings.eveningStartTime || settings.eveningEndTime;
+
+  if (!hasMorning && !hasEvening) {
+    // No sessions configured — fall back to single "morning" session, no_window
+    return { session: "morning", windowStatus: "no_window", startTime: null, endTime: null };
+  }
+
+  if (hasMorning && !hasEvening) {
+    // Only morning configured
+    const status = checkTimeWindow(currentHHMM, settings.attendanceStartTime, settings.attendanceEndTime);
+    return { session: "morning", windowStatus: status, startTime: settings.attendanceStartTime, endTime: settings.attendanceEndTime };
+  }
+
+  if (!hasMorning && hasEvening) {
+    // Only evening configured
+    const status = checkTimeWindow(currentHHMM, settings.eveningStartTime, settings.eveningEndTime);
+    return { session: "evening", windowStatus: status, startTime: settings.eveningStartTime, endTime: settings.eveningEndTime };
+  }
+
+  // Both sessions configured
+  const morningStatus = checkTimeWindow(currentHHMM, settings.attendanceStartTime, settings.attendanceEndTime);
+  const eveningStatus = checkTimeWindow(currentHHMM, settings.eveningStartTime, settings.eveningEndTime);
+
+  if (morningStatus === "within_window") {
+    return { session: "morning", windowStatus: "within_window", startTime: settings.attendanceStartTime, endTime: settings.attendanceEndTime };
+  }
+  if (eveningStatus === "within_window") {
+    return { session: "evening", windowStatus: "within_window", startTime: settings.eveningStartTime, endTime: settings.eveningEndTime };
+  }
+  if (morningStatus === "before_window") {
+    // Before morning window opens — morning session pending
+    return { session: "morning", windowStatus: "before_window", startTime: settings.attendanceStartTime, endTime: settings.attendanceEndTime };
+  }
+  if (eveningStatus === "before_window") {
+    // Morning closed, waiting for evening
+    return { session: "evening", windowStatus: "before_window", startTime: settings.eveningStartTime, endTime: settings.eveningEndTime };
+  }
+  // Both windows have closed
+  return { session: "evening", windowStatus: "after_window", startTime: settings.eveningStartTime, endTime: settings.eveningEndTime };
+}
+
 // ── Other helpers ────────────────────────────────────────────────────────────
 
 function isGeofenceConfigured(geofence) {
@@ -74,6 +130,7 @@ function serializeAttendanceRecord(record) {
     userDepartment: populatedUser ? (record.userId.department || null) : undefined,
     userProfileImage: populatedUser ? (record.userId.profileImage || null) : undefined,
     date: record.date,
+    session: record.session || "morning",
     time: record.time,
     latitude: record.latitude,
     longitude: record.longitude,
@@ -92,10 +149,11 @@ function serializeAttendanceRecord(record) {
   };
 }
 
-async function upsertAttendanceRecord({ userId, status, reason = null, source = "normal", location, distanceMeters = null, dateParts, extraFields = {} }) {
+async function upsertAttendanceRecord({ userId, session, status, reason = null, source = "normal", location, distanceMeters = null, dateParts, extraFields = {} }) {
   const payload = {
     userId,
     date: dateParts.date,
+    session,
     time: dateParts.time,
     latitude: location?.latitude ?? null,
     longitude: location?.longitude ?? null,
@@ -110,7 +168,7 @@ async function upsertAttendanceRecord({ userId, status, reason = null, source = 
   };
 
   return Attendance.findOneAndUpdate(
-    { userId, date: dateParts.date },
+    { userId, date: dateParts.date, session },
     { $set: payload },
     { new: true, runValidators: true, setDefaultsOnInsert: true, upsert: true }
   );
@@ -129,17 +187,17 @@ function blockedAttendanceResponse(res, record, distanceMeters, geofence) {
 }
 
 /**
- * Fetches the pending re-validation appeal for a user ON a given re-validation date.
- * NOTE: we match against appeal.appealDate (the date the admin set for re-validation),
- * NOT appeal.date (which is the original absence date — a different day).
+ * Fetches the pending re-validation appeal for a user ON a given re-validation date,
+ * for a specific session. Session-aware so morning and evening appeals are independent.
  */
-async function getPendingRevalidationAppeal(userId, date) {
+async function getPendingRevalidationAppeal(userId, date, session = "morning") {
   return Appeal.findOne({
     userId,
-    appealDate: date,          // ← re-validation date, not original absence date
+    appealDate: date,
     status: "approved",
     requiresRevalidation: true,
     revalidationStatus: "pending",
+    session,
   });
 }
 
@@ -148,7 +206,7 @@ async function getPendingRevalidationAppeal(userId, date) {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/location-check", async (req, res) => {
   try {
-    const settings = await OrganizationSettings.getSingleton();
+    const settings = await OrganizationSettings.findOne({ _singleton: "global" }).lean() || {};
     const geofence = getGeofenceConfig(settings);
 
     if (!isGeofenceConfigured(geofence)) {
@@ -168,27 +226,45 @@ router.post("/location-check", async (req, res) => {
     }
 
     const dateParts = getDateTimeParts();
-    const existingRecord = await Attendance.findOne({ userId: req.user.id, date: dateParts.date });
+    const timeZone = settings.cutoffTimeZone || process.env.APP_TIMEZONE || "Asia/Kolkata";
+    const currentHHMM = getCurrentTimeHHMM(timeZone);
+
+    // ── Half-day leave check ──────────────────────────────────────────────────
+    const halfDayLeave = await LeaveRequest.findOne({
+      userId: req.user.id,
+      date: dateParts.date,
+      status: "approved",
+      type: "half_day",
+    }).lean();
+    // ── End half-day check ────────────────────────────────────────────────────
+
+    const sessionInfo = detectCurrentSession(settings, currentHHMM);
+    // Half-day leave: required session is the OPPOSITE of the leave session
+    // morning leave → must attend evening; evening leave → must attend morning
+    const requiredSession = halfDayLeave
+      ? (halfDayLeave.halfDaySession === "morning" ? "evening" : "morning")
+      : sessionInfo.session;
+    const session = halfDayLeave ? requiredSession : sessionInfo.session;
+    const effectiveSessionInfo = halfDayLeave
+      ? { ...sessionInfo, session: requiredSession }
+      : sessionInfo;
+
+    const existingRecord = await Attendance.findOne({ userId: req.user.id, date: dateParts.date, session });
 
     if (existingRecord?.status === ATTENDANCE_STATUS.PRESENT) {
       return res.json({
         allowed: true,
         alreadyMarked: true,
+        session,
+        halfDayLeave: !!halfDayLeave,
         record: serializeAttendanceRecord(existingRecord),
       });
     }
 
     // ── Attendance time window check ──────────────────────────────────────────
-    const timeZone = settings.cutoffTimeZone || process.env.APP_TIMEZONE || "Asia/Kolkata";
-    const currentHHMM = getCurrentTimeHHMM(timeZone);
-
-    // Check if user has a pending re-validation appeal FIRST.
-    // A re-validation appeal overrides the autoMarked block — the admin explicitly
-    // granted a new window so the cutoff sentinel must not prevent it.
-    const revalAppeal = await getPendingRevalidationAppeal(req.user.id, dateParts.date);
+    const revalAppeal = await getPendingRevalidationAppeal(req.user.id, dateParts.date, session);
 
     if (revalAppeal) {
-      // Appeal re-validation window governs this user today
       const windowStatus = checkTimeWindow(currentHHMM, revalAppeal.appealStartTime, revalAppeal.appealEndTime);
       if (windowStatus === "before_window") {
         return res.status(403).json({
@@ -208,9 +284,7 @@ router.post("/location-check", async (req, res) => {
           appealWindowEnd: revalAppeal.appealEndTime,
         });
       }
-      // within_window — fall through to location/face check
     } else {
-      // No re-validation appeal — apply the autoMarked guard for normal flow
       if (existingRecord?.autoMarked === true) {
         return res.status(403).json({
           allowed: false,
@@ -221,24 +295,24 @@ router.post("/location-check", async (req, res) => {
         });
       }
 
-      // Normal global attendance window check
-      const windowStatus = checkTimeWindow(currentHHMM, settings.attendanceStartTime, settings.attendanceEndTime);
-      if (windowStatus === "before_window") {
+      if (effectiveSessionInfo.windowStatus === "before_window") {
         return res.status(403).json({
           allowed: false,
           code: "window_not_open",
-          message: `Attendance window has not opened yet. Please come back at ${settings.attendanceStartTime}.`,
-          windowStart: settings.attendanceStartTime,
-          windowEnd: settings.attendanceEndTime,
+          message: `${session === "morning" ? "Work Start" : "Work End"} attendance window has not opened yet. Please come back at ${effectiveSessionInfo.startTime}.`,
+          session,
+          windowStart: effectiveSessionInfo.startTime,
+          windowEnd: effectiveSessionInfo.endTime,
         });
       }
-      if (windowStatus === "after_window") {
+      if (effectiveSessionInfo.windowStatus === "after_window") {
         return res.status(403).json({
           allowed: false,
           code: "window_closed",
-          message: "The attendance window is now closed for today.",
-          windowStart: settings.attendanceStartTime,
-          windowEnd: settings.attendanceEndTime,
+          message: `The ${session === "morning" ? "Work Start" : "Work End"} attendance window is now closed for today.`,
+          session,
+          windowStart: effectiveSessionInfo.startTime,
+          windowEnd: effectiveSessionInfo.endTime,
         });
       }
     }
@@ -256,6 +330,7 @@ router.post("/location-check", async (req, res) => {
     if (distanceMeters > geofence.radius) {
       const record = await upsertAttendanceRecord({
         userId: req.user.id,
+        session,
         status: ATTENDANCE_STATUS.ABSENT,
         reason: ATTENDANCE_REASON.OUTSIDE_LOCATION,
         location: validation.location,
@@ -265,19 +340,21 @@ router.post("/location-check", async (req, res) => {
       return blockedAttendanceResponse(res, record, distanceMeters, geofence);
     }
 
-    return res.json({ allowed: true, distanceMeters, radius: geofence.radius });
+    return res.json({ allowed: true, session, halfDayLeave: !!halfDayLeave, distanceMeters, radius: geofence.radius });
   } catch (err) {
     console.error("location-check error:", err);
     return res.status(500).json({ message: "Server error while validating location.", allowed: false });
   }
 });
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/attendance/mark
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/mark", async (req, res) => {
   try {
-    const settings = await OrganizationSettings.getSingleton();
+    // Always fetch a fresh lean object — getSingleton() can return a stale Mongoose document
+    const settings = await OrganizationSettings.findOne({ _singleton: "global" }).lean() || {};
     const geofence = getGeofenceConfig(settings);
 
     if (!isGeofenceConfigured(geofence)) {
@@ -303,25 +380,69 @@ router.post("/mark", async (req, res) => {
     }
 
     const dateParts = getDateTimeParts();
-    const existingRecord = await Attendance.findOne({ userId: req.user.id, date: dateParts.date });
+    const timeZone = settings.cutoffTimeZone || process.env.APP_TIMEZONE || "Asia/Kolkata";
+    const currentHHMM = getCurrentTimeHHMM(timeZone);
+
+    // ── Half-day leave check ─────────────────────────────────────────
+    const halfDayLeave = await LeaveRequest.findOne({
+      userId: req.user.id,
+      date: dateParts.date,
+      status: "approved",
+      type: "half_day",
+    }).lean();
+
+    // If half-day leave: stamp the LEAVE session as "leave", then force the REQUIRED session
+    // morning leave → stamp morning as leave, user must attend evening
+    // evening leave → stamp evening as leave, user must attend morning
+    if (halfDayLeave) {
+      const leaveSession = halfDayLeave.halfDaySession || "morning";
+      const leaveSessionFields = {
+        userId: req.user.id,
+        date: dateParts.date,
+        session: leaveSession,
+        time: dateParts.time,
+        status: "leave",
+        reason: "half_day_leave",
+        source: "leave",
+        adminApproved: true,
+        autoMarked: false,
+        penalty: false,
+        latitude: null,
+        longitude: null,
+        distanceFromGeofence: null,
+        locationAccuracy: null,
+        locationTimestamp: dateParts.now,
+        markedAt: null,
+      };
+      await Attendance.findOneAndUpdate(
+        { userId: req.user.id, date: dateParts.date, session: leaveSession },
+        { $set: leaveSessionFields },
+        { upsert: true, setDefaultsOnInsert: true }
+      );
+    }
+    // ── End half-day check ───────────────────────────────────────────────
+
+    // Detect session: half-day leave forces the OPPOSITE of the leave session
+    const sessionInfo = detectCurrentSession(settings, currentHHMM);
+    const session = halfDayLeave
+      ? (halfDayLeave.halfDaySession === "morning" ? "evening" : "morning")
+      : sessionInfo.session;
+
+    const existingRecord = await Attendance.findOne({ userId: req.user.id, date: dateParts.date, session });
 
     if (existingRecord?.status === ATTENDANCE_STATUS.PRESENT) {
       return res.status(409).json({
-        message: "Attendance already marked for today.",
+        message: `${session === "morning" ? "Morning" : "Evening"} attendance already marked for today.`,
         alreadyMarked: true,
+        session,
         record: serializeAttendanceRecord(existingRecord),
       });
     }
 
     // ── Attendance time window check ──────────────────────────────────────────
-    const timeZone = settings.cutoffTimeZone || process.env.APP_TIMEZONE || "Asia/Kolkata";
-    const currentHHMM = getCurrentTimeHHMM(timeZone);
-
-    // Check re-validation appeal FIRST — overrides autoMarked block
-    const revalAppeal = await getPendingRevalidationAppeal(req.user.id, dateParts.date);
+    const revalAppeal = await getPendingRevalidationAppeal(req.user.id, dateParts.date, session);
 
     if (revalAppeal) {
-      // Appeal re-validation window
       const windowStatus = checkTimeWindow(currentHHMM, revalAppeal.appealStartTime, revalAppeal.appealEndTime);
       if (windowStatus === "before_window") {
         return res.status(403).json({
@@ -339,9 +460,7 @@ router.post("/mark", async (req, res) => {
           appealWindowEnd: revalAppeal.appealEndTime,
         });
       }
-      // within_window — fall through to location/face check
     } else {
-      // No re-validation appeal — apply normal autoMarked guard
       if (existingRecord?.autoMarked === true) {
         return res.status(403).json({
           code: "cutoff_passed",
@@ -351,22 +470,22 @@ router.post("/mark", async (req, res) => {
         });
       }
 
-      // Normal global attendance window check
-      const windowStatus = checkTimeWindow(currentHHMM, settings.attendanceStartTime, settings.attendanceEndTime);
-      if (windowStatus === "before_window") {
+      if (sessionInfo.windowStatus === "before_window") {
         return res.status(403).json({
           code: "window_not_open",
-          message: `Attendance window has not opened yet. Please come back at ${settings.attendanceStartTime}.`,
-          windowStart: settings.attendanceStartTime,
-          windowEnd: settings.attendanceEndTime,
+          message: `${session === "morning" ? "Morning" : "Evening"} attendance window has not opened yet. Please come back at ${sessionInfo.startTime}.`,
+          session,
+          windowStart: sessionInfo.startTime,
+          windowEnd: sessionInfo.endTime,
         });
       }
-      if (windowStatus === "after_window") {
+      if (sessionInfo.windowStatus === "after_window") {
         return res.status(403).json({
           code: "window_closed",
-          message: "The attendance window is now closed for today.",
-          windowStart: settings.attendanceStartTime,
-          windowEnd: settings.attendanceEndTime,
+          message: `The ${session === "morning" ? "morning" : "evening"} attendance window is now closed for today.`,
+          session,
+          windowStart: sessionInfo.startTime,
+          windowEnd: sessionInfo.endTime,
         });
       }
     }
@@ -384,6 +503,7 @@ router.post("/mark", async (req, res) => {
     if (distanceMeters > geofence.radius) {
       const record = await upsertAttendanceRecord({
         userId: req.user.id,
+        session,
         status: ATTENDANCE_STATUS.ABSENT,
         reason: ATTENDANCE_REASON.OUTSIDE_LOCATION,
         location: validation.location,
@@ -393,12 +513,12 @@ router.post("/mark", async (req, res) => {
       return blockedAttendanceResponse(res, record, distanceMeters, geofence);
     }
 
-    // Determine source: re-validation vs normal
     const attendanceSource = revalAppeal ? "appeal_approval" : "normal";
     const extraFields = revalAppeal ? { adminApproved: true } : {};
 
     const record = await upsertAttendanceRecord({
       userId: req.user.id,
+      session,
       status: ATTENDANCE_STATUS.PRESENT,
       reason: null,
       source: attendanceSource,
@@ -408,7 +528,6 @@ router.post("/mark", async (req, res) => {
       extraFields,
     });
 
-    // If this was a re-validation, mark the appeal as completed
     if (revalAppeal) {
       await Appeal.updateOne(
         { _id: revalAppeal._id },
@@ -419,6 +538,7 @@ router.post("/mark", async (req, res) => {
     return res.status(existingRecord ? 200 : 201).json({
       message: "Attendance marked successfully.",
       record: serializeAttendanceRecord(record),
+      session,
       updatedFrom: existingRecord?.status || null,
       wasRevalidation: Boolean(revalAppeal),
     });
@@ -432,8 +552,8 @@ router.post("/mark", async (req, res) => {
 router.get("/my", async (req, res) => {
   try {
     const records = await Attendance.find({ userId: req.user.id })
-      .sort({ date: -1, createdAt: -1 })
-      .limit(30);
+      .sort({ date: -1, session: 1, createdAt: -1 })
+      .limit(60); // 30 days × 2 sessions
     return res.json(records.map((r) => serializeAttendanceRecord(r)));
   } catch (err) {
     return res.status(500).json({ message: "Failed to fetch your attendance." });
@@ -444,24 +564,66 @@ router.get("/my", async (req, res) => {
 router.get("/today", async (req, res) => {
   try {
     const dateParts = getDateTimeParts();
-    const [record, settings] = await Promise.all([
-      Attendance.findOne({ userId: req.user.id, date: dateParts.date }),
-      OrganizationSettings.getSingleton(),
+    // Fetch attendance records, settings, and half-day leave in parallel.
+    const [allTodayRecords, settings, halfDayLeave] = await Promise.all([
+      Attendance.find({ userId: req.user.id, date: dateParts.date }),
+      OrganizationSettings.findOne({ _singleton: "global" }).lean(),
+      LeaveRequest.findOne({
+        userId: req.user.id,
+        date: dateParts.date,
+        status: "approved",
+        type: "half_day",
+      }).lean(),
     ]);
 
-    // Check if user has a pending re-validation appeal
-    const revalAppeal = await getPendingRevalidationAppeal(req.user.id, dateParts.date);
+    const morningRecord = allTodayRecords.find((r) => r.session === "morning") || null;
+    const eveningRecord = allTodayRecords.find((r) => r.session === "evening") || null;
 
-    // A user with an active re-validation appeal must NOT be treated as cutoff-blocked,
-    // even if autoMarked=true was set by the cron earlier — that's the whole point of the
-    // appeal approval granting a new window.
-    const cutoffPassed = record?.autoMarked === true && !revalAppeal;
-    const alreadyPresent = record?.status === ATTENDANCE_STATUS.PRESENT;
-
-    // Build window info for the frontend
-    const timeZone = settings.cutoffTimeZone || process.env.APP_TIMEZONE || "Asia/Kolkata";
+    const safeSettings = settings || {};
+    const timeZone = safeSettings.cutoffTimeZone || process.env.APP_TIMEZONE || "Asia/Kolkata";
     const currentHHMM = getCurrentTimeHHMM(timeZone);
 
+    // ── Half-day leave flags ────────────────────────────────────────────────────
+    // morning leave → morning is waived, must attend evening
+    // evening leave → evening is waived, must attend morning
+    const leaveSession = halfDayLeave?.halfDaySession || "morning";
+    const morningIsLeave = leaveSession === "morning"
+      ? (!!halfDayLeave || morningRecord?.reason === "half_day_leave" || morningRecord?.status === "leave")
+      : (morningRecord?.reason === "half_day_leave" || morningRecord?.status === "leave");
+    const eveningIsLeave = leaveSession === "evening"
+      ? (!!halfDayLeave || eveningRecord?.reason === "half_day_leave" || eveningRecord?.status === "leave")
+      : (eveningRecord?.reason === "half_day_leave" || eveningRecord?.status === "leave");
+
+    const sessionInfo = detectCurrentSession(safeSettings, currentHHMM);
+    // If half-day leave, active session = OPPOSITE of the leave session
+    const activeSession = halfDayLeave
+      ? (leaveSession === "morning" ? "evening" : "morning")
+      : sessionInfo.session;
+
+    // ── Re-validation appeal check (session-aware) ──────────────────────────────
+    // Must be after activeSession is known so we look up the right session's appeal.
+    const revalAppeal = await getPendingRevalidationAppeal(req.user.id, dateParts.date, activeSession);
+
+    // The "current" record is the one for the active session
+    const currentRecord = activeSession === "evening" ? eveningRecord : morningRecord;
+
+    const cutoffPassed = currentRecord?.autoMarked === true && !revalAppeal;
+    const morningMarked = morningRecord?.status === ATTENDANCE_STATUS.PRESENT || morningIsLeave;
+    const eveningMarked = eveningRecord?.status === ATTENDANCE_STATUS.PRESENT || eveningIsLeave;
+
+    const hasMorning = Boolean(settings.attendanceStartTime || settings.attendanceEndTime);
+    const hasEvening = Boolean(settings.eveningStartTime || settings.eveningEndTime);
+    const bothRequired = hasMorning && hasEvening;
+    // Half-day: leave session is waived - only the required (opposite) session counts for completion
+    const allSessionsComplete = halfDayLeave
+      ? (leaveSession === "morning"
+        ? eveningRecord?.status === ATTENDANCE_STATUS.PRESENT   // morning leave -> need evening present
+        : morningRecord?.status === ATTENDANCE_STATUS.PRESENT)  // evening leave -> need morning present
+      : bothRequired
+        ? morningMarked && eveningMarked
+        : morningMarked || eveningMarked;
+
+    // Build window info for the frontend
     let windowInfo = null;
     if (revalAppeal) {
       const windowStatus = checkTimeWindow(currentHHMM, revalAppeal.appealStartTime, revalAppeal.appealEndTime);
@@ -472,24 +634,55 @@ router.get("/today", async (req, res) => {
         status: windowStatus,
         appealId: revalAppeal._id,
       };
-    } else if (settings.attendanceStartTime || settings.attendanceEndTime) {
-      const windowStatus = checkTimeWindow(currentHHMM, settings.attendanceStartTime, settings.attendanceEndTime);
+    } else if (sessionInfo.windowStatus !== "no_window") {
       windowInfo = {
-        type: "normal",
-        startTime: settings.attendanceStartTime,
-        endTime: settings.attendanceEndTime,
-        status: windowStatus,
+        type: activeSession === "morning" ? "morning" : "evening",
+        session: activeSession,
+        startTime: sessionInfo.startTime,
+        endTime: sessionInfo.endTime,
+        status: sessionInfo.windowStatus,
+        // Include both session configs for the frontend to display context
+        morningStartTime: settings.attendanceStartTime,
+        morningEndTime: settings.attendanceEndTime,
+        eveningStartTime: settings.eveningStartTime,
+        eveningEndTime: settings.eveningEndTime,
+        bothSessionsEnabled: bothRequired,
       };
     }
 
     return res.json({
-      hasRecord: Boolean(record),
-      marked: alreadyPresent,
-      status: record?.status || "not_marked",
-      canRetry: !record || (!alreadyPresent && !cutoffPassed),
+      hasRecord: Boolean(currentRecord),
+      marked: Boolean(currentRecord?.status === ATTENDANCE_STATUS.PRESENT),
+      allSessionsComplete,
+      status: currentRecord?.status || "not_marked",
+      canRetry: !currentRecord || (currentRecord.status !== ATTENDANCE_STATUS.PRESENT && !cutoffPassed),
       cutoffPassed,
-      record: serializeAttendanceRecord(record),
+      activeSession,
+      halfDayLeave: !!halfDayLeave,
+      halfDayLeaveSession: halfDayLeave?.halfDaySession ?? null,
+      morningIsLeave,
+      eveningIsLeave,
+      morningRecord: serializeAttendanceRecord(morningRecord),
+      eveningRecord: serializeAttendanceRecord(eveningRecord),
+      record: serializeAttendanceRecord(currentRecord),
       windowInfo,
+      // Session config summary
+      sessions: {
+        morning: {
+          enabled: hasMorning,
+          marked: morningMarked,
+          isLeave: morningIsLeave,
+          startTime: settings.attendanceStartTime,
+          endTime: settings.attendanceEndTime,
+        },
+        evening: {
+          enabled: hasEvening,
+          marked: eveningMarked,
+          isLeave: eveningIsLeave,
+          startTime: settings.eveningStartTime,
+          endTime: settings.eveningEndTime,
+        },
+      },
     });
   } catch (err) {
     return res.status(500).json({ message: "Server error." });
@@ -505,9 +698,8 @@ router.get("/all", adminOnly, async (req, res) => {
         match: { isDeleted: { $ne: true } },
         select: "name email department profileImage",
       })
-      .sort({ date: -1, createdAt: -1 });
+      .sort({ date: -1, session: 1, createdAt: -1 });
 
-    // Remove records whose user has been soft-deleted
     const visible = records.filter((r) => r.userId !== null);
     return res.json(visible.map((r) => serializeAttendanceRecord(r)));
   } catch (err) {
@@ -520,6 +712,8 @@ router.get("/stats", adminOnly, async (req, res) => {
   try {
     const dateParts = getDateTimeParts();
     const totalUsers = await User.countDocuments({ role: "user", isDeleted: { $ne: true } });
+    const morningPresentToday = await Attendance.countDocuments({ date: dateParts.date, session: "morning", status: ATTENDANCE_STATUS.PRESENT });
+    const eveningPresentToday = await Attendance.countDocuments({ date: dateParts.date, session: "evening", status: ATTENDANCE_STATUS.PRESENT });
     const presentToday = await Attendance.countDocuments({ date: dateParts.date, status: ATTENDANCE_STATUS.PRESENT });
     const absentToday = await Attendance.countDocuments({ date: dateParts.date, status: ATTENDANCE_STATUS.ABSENT });
     const outsideLocationToday = await Attendance.countDocuments({ date: dateParts.date, reason: ATTENDANCE_REASON.OUTSIDE_LOCATION });
@@ -528,6 +722,8 @@ router.get("/stats", adminOnly, async (req, res) => {
     return res.json({
       totalUsers,
       presentToday,
+      morningPresentToday,
+      eveningPresentToday,
       absentToday,
       outsideLocationToday,
       pendingToday: Math.max(totalUsers - presentToday - absentToday, 0),

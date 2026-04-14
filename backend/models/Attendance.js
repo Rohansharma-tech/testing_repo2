@@ -13,10 +13,19 @@ const attendanceSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Date in YYYY-MM-DD format (used to enforce one-per-day rule)
+    // Date in YYYY-MM-DD format
     date: {
       type: String,
       required: true,
+    },
+
+    // Session: "morning" or "evening"
+    // Users must mark attendance once per session per day (if both are configured).
+    session: {
+      type: String,
+      enum: ["morning", "evening"],
+      required: true,
+      default: "morning",
     },
 
     // Time in HH:MM format (12-hour or 24-hour)
@@ -105,7 +114,7 @@ const attendanceSchema = new mongoose.Schema(
   }
 );
 
-// Compound index: ensures one attendance record per user per day
-attendanceSchema.index({ userId: 1, date: 1 }, { unique: true });
+// Compound index: ensures one attendance record per user per day per session
+attendanceSchema.index({ userId: 1, date: 1, session: 1 }, { unique: true });
 
 module.exports = mongoose.model("Attendance", attendanceSchema);

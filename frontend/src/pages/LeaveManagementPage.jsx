@@ -79,15 +79,41 @@ function LeaveCard({ leave }) {
         )}
       </td>
 
-      {/* Alert for rejected */}
+      {/* Type badge */}
+      <td className="px-4 py-3.5">
+        {leave.type === "half_day" ? (
+          <div className="flex flex-col gap-1">
+            <span className="inline-flex items-center rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
+              Half Day
+            </span>
+            {leave.halfDaySession && (
+              <span className="inline-flex items-center rounded-lg border border-violet-100 bg-violet-50 px-2.5 py-0.5 text-xs text-violet-500">
+                {leave.halfDaySession === "morning" ? "Morning leave" : "Evening leave"}
+              </span>
+            )}
+          </div>
+        ) : (
+          <span className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500">
+            Full Day
+          </span>
+        )}
+      </td>
+
+      {/* Action Required */}
       <td className="px-4 py-3.5">
         {leave.status === "rejected" ? (
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
             <svg className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
-            Mark attendance manually
+            Mark both sessions
+          </span>
+        ) : leave.type === "half_day" && leave.status === "approved" ? (
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
+            {leave.halfDaySession === "morning"
+              ? "Mark Work End attendance"
+              : "Mark Work Start attendance"}
           </span>
         ) : (
-          <span className="text-slate-300">—</span>
+          <span className="text-slate-300">-</span>
         )}
       </td>
     </tr>
@@ -100,7 +126,7 @@ export default function LeaveManagementPage() {
   const [leaves, setLeaves] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [formData, setFormData] = useState({ date: "", reason: "" });
+  const [formData, setFormData] = useState({ date: "", reason: "", type: "full_day", halfDaySession: "morning" });
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [activeTab, setActiveTab] = useState("pending");
@@ -124,9 +150,13 @@ export default function LeaveManagementPage() {
     setError(null);
     setSuccess(null);
     try {
-      await api.post("/leaves", formData);
+      // Only send halfDaySession when type is half_day
+      const payload = formData.type === "half_day"
+        ? formData
+        : { date: formData.date, reason: formData.reason, type: formData.type };
+      await api.post("/leaves", payload);
       setSuccess("Leave request submitted successfully.");
-      setFormData({ date: "", reason: "" });
+      setFormData({ date: "", reason: "", type: "full_day", halfDaySession: "morning" });
       fetchLeaves();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to submit leave request.");
@@ -185,6 +215,71 @@ export default function LeaveManagementPage() {
             )}
 
             <form onSubmit={handleSubmit}>
+              {/* Leave Type Toggle */}
+              <div className="mb-4">
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">Leave Type</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, type: "full_day", halfDaySession: "morning" })}
+                    className={`flex-1 rounded-xl border px-4 py-2.5 text-sm font-medium transition-all ${
+                      formData.type === "full_day"
+                        ? "border-blue-500 bg-blue-50 text-blue-700"
+                        : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    Full Day
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, type: "half_day", halfDaySession: "morning" })}
+                    className={`flex-1 rounded-xl border px-4 py-2.5 text-sm font-medium transition-all ${
+                      formData.type === "half_day"
+                        ? "border-violet-500 bg-violet-50 text-violet-700"
+                        : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    Half Day
+                  </button>
+                </div>
+
+                {/* Session selector — only shown for half-day */}
+                {formData.type === "half_day" && (
+                  <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 space-y-2">
+                    <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide">Which session is leave?</p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, halfDaySession: "morning" })}
+                        className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-all ${
+                          formData.halfDaySession === "morning"
+                            ? "border-violet-500 bg-violet-600 text-white"
+                            : "border-violet-200 bg-white text-violet-600 hover:bg-violet-100"
+                        }`}
+                      >
+                        Morning (Work Start)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, halfDaySession: "evening" })}
+                        className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-all ${
+                          formData.halfDaySession === "evening"
+                            ? "border-violet-500 bg-violet-600 text-white"
+                            : "border-violet-200 bg-white text-violet-600 hover:bg-violet-100"
+                        }`}
+                      >
+                        Evening (Work End)
+                      </button>
+                    </div>
+                    <p className="text-xs text-violet-600 leading-relaxed">
+                      {formData.halfDaySession === "morning"
+                        ? "Work Start session will be waived. You must still mark Work End attendance on that day."
+                        : "Work End session will be waived. You must still mark Work Start attendance on that day."}
+                    </p>
+                  </div>
+                )}
+              </div>
+
               <div className="grid gap-4 sm:grid-cols-[1fr_2fr_auto] items-end">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-slate-700">Date</label>
@@ -262,6 +357,7 @@ export default function LeaveManagementPage() {
                   <tr className="border-b border-slate-100 bg-slate-50">
                     <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Date</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Reason</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Type</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Status</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Admin Note</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Action Required</th>

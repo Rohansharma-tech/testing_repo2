@@ -7,27 +7,36 @@ import api from "../api/axios";
 import PageWrapper from "../components/PageWrapper";
 import { useToast } from "../components/Toast";
 
-const EMPTY = { latitude: "", longitude: "", radius: "" };
+const EMPTY = { latitude: "", longitude: "", radius: "", maxAccuracyMeters: "" };
 
 export default function LocationSettingsPage() {
   const [form, setForm] = useState(EMPTY);
-  const [current, setCurrent] = useState(null); // last saved DB values
+  const [current, setCurrent] = useState(null);       // last saved DB values
+  const [activeGeofence, setActiveGeofence] = useState(null); // effective runtime config
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [locating, setLocating] = useState(false);
   const { showToast, ToastContainer } = useToast();
 
-  // ── Load current DB values ──────────────────────────────────────────────────
+  // ── Load current DB values + effective geofence ─────────────────────────────
   useEffect(() => {
     async function load() {
       try {
-        const res = await api.get("/settings/geofence-db");
-        setCurrent(res.data);
-        if (res.data.latitude !== null) {
+        const [dbRes, activeRes] = await Promise.all([
+          api.get("/settings/geofence-db"),
+          api.get("/settings/geofence"),
+        ]);
+        setCurrent(dbRes.data);
+        setActiveGeofence(activeRes.data);
+        if (dbRes.data.latitude !== null && dbRes.data.latitude !== undefined) {
           setForm({
-            latitude: String(res.data.latitude),
-            longitude: String(res.data.longitude),
-            radius: String(res.data.radius),
+            latitude: String(dbRes.data.latitude),
+            longitude: String(dbRes.data.longitude),
+            radius: String(dbRes.data.radius),
+            maxAccuracyMeters:
+              dbRes.data.maxAccuracyMeters != null
+                ? String(dbRes.data.maxAccuracyMeters)
+                : "",
           });
         }
       } catch {
@@ -74,13 +83,20 @@ export default function LocationSettingsPage() {
     e.preventDefault();
     setSaving(true);
     try {
-      const res = await api.put("/settings/geofence-db", {
+      const payload = {
         latitude: Number(form.latitude),
         longitude: Number(form.longitude),
         radius: Number(form.radius),
-      });
+      };
+      if (form.maxAccuracyMeters !== "") {
+        payload.maxAccuracyMeters = Number(form.maxAccuracyMeters);
+      }
+      const res = await api.put("/settings/geofence-db", payload);
       setCurrent(res.data);
-      showToast("Geofence location saved successfully.", "success");
+      // Refresh the effective geofence to confirm the new values are live
+      const activeRes = await api.get("/settings/geofence");
+      setActiveGeofence(activeRes.data);
+      showToast("Geofence location saved and active immediately.", "success");
     } catch (err) {
       showToast(err.response?.data?.message || "Failed to save location.", "error");
     } finally {
@@ -98,10 +114,11 @@ export default function LocationSettingsPage() {
       <ToastContainer />
 
       <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        {/* ── Left: status card ── */}
+        {/* ── Left: status cards ── */}
         <section className="space-y-6">
+          {/* Saved (DB) values */}
           <div className="card">
-            <p className="section-label">Active Geofence</p>
+            <p className="section-label">Saved in Database</p>
 
             {loading ? (
               <div className="mt-4 space-y-3">
@@ -134,21 +151,6 @@ export default function LocationSettingsPage() {
               </div>
             )}
           </div>
-
-          {/* Info box */}
-          <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-800">
-            <p className="font-semibold">How this works</p>
-            <ul className="mt-2 list-inside list-disc space-y-1 text-blue-700">
-              <li>Saved values take effect immediately — no restart needed.</li>
-              <li>
-                When no DB record exists, <code className="rounded bg-blue-100 px-1">GEOFENCE_LAT</code>,{" "}
-                <code className="rounded bg-blue-100 px-1">GEOFENCE_LNG</code>, and{" "}
-                <code className="rounded bg-blue-100 px-1">GEOFENCE_RADIUS</code> from{" "}
-                <code className="rounded bg-blue-100 px-1">.env</code> are used.
-              </li>
-              <li>Radius is the maximum distance (in metres) from the centre point.</li>
-            </ul>
-          </div>
         </section>
 
         {/* ── Right: form ── */}
@@ -170,8 +172,18 @@ export default function LocationSettingsPage() {
                 </>
               ) : (
                 <>
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0-6C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z" />
+                  <svg
+                    className="h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0-6C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"
+                    />
                   </svg>
                   Use Current Location
                 </>
@@ -185,7 +197,9 @@ export default function LocationSettingsPage() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Latitude</label>
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                Latitude
+              </label>
               <input
                 type="number"
                 step="any"
@@ -200,7 +214,9 @@ export default function LocationSettingsPage() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Longitude</label>
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                Longitude
+              </label>
               <input
                 type="number"
                 step="any"
@@ -229,7 +245,30 @@ export default function LocationSettingsPage() {
                 required
               />
               <p className="mt-1.5 text-xs text-slate-400">
-                Employees must be within this distance of the centre point to mark attendance.
+                Employees must be within this distance of the centre point to mark
+                attendance.
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                Max GPS Accuracy{" "}
+                <span className="font-normal text-slate-400">(metres, optional)</span>
+              </label>
+              <input
+                type="number"
+                step="1"
+                min="10"
+                className="input-field"
+                placeholder="e.g. 200 (leave blank to use .env default)"
+                value={form.maxAccuracyMeters}
+                onChange={(e) =>
+                  setForm({ ...form, maxAccuracyMeters: e.target.value })
+                }
+              />
+              <p className="mt-1.5 text-xs text-slate-400">
+                Rejects GPS fixes less accurate than this value. Lower = stricter. Leave
+                blank to use .env default.
               </p>
             </div>
 

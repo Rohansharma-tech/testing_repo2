@@ -58,6 +58,12 @@ const appealSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Which session this appeal covers (morning = Work Start, evening = Work End)
+    session: {
+      type: String,
+      enum: ["morning", "evening"],
+      default: "morning",
+    },
     // Tracks completion of the re-validation flow
     revalidationStatus: {
       type: String,
@@ -70,7 +76,7 @@ const appealSchema = new mongoose.Schema(
   }
 );
 
-// A user can appeal at most once per day's cutoff instance
-appealSchema.index({ userId: 1, date: 1 }, { unique: true });
+// A user can appeal each session independently (e.g. miss morning, miss evening on the same day)
+appealSchema.index({ userId: 1, date: 1, session: 1 }, { unique: true });
 
 module.exports = mongoose.model("Appeal", appealSchema);

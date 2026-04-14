@@ -80,6 +80,7 @@ function getGeofenceConfig(dbOverride = null) {
   const dbLat = dbOverride ? toNumber(dbOverride.geofenceLatitude) : null;
   const dbLng = dbOverride ? toNumber(dbOverride.geofenceLongitude) : null;
   const dbRadius = dbOverride ? toNumber(dbOverride.geofenceRadius) : null;
+  const dbMaxAccuracy = dbOverride ? toNumber(dbOverride.maxAccuracyMeters) : null;
 
   const hasDbGeofence =
     dbLat !== null && dbLng !== null && dbRadius !== null;
@@ -88,9 +89,12 @@ function getGeofenceConfig(dbOverride = null) {
   const longitude = hasDbGeofence ? dbLng : toNumber(process.env.GEOFENCE_LNG);
   const radius = hasDbGeofence ? dbRadius : toNumber(process.env.GEOFENCE_RADIUS);
 
+  // maxAccuracyMeters priority: DB value → env var → max(radius, 120)
   const maxAccuracyMeters =
-    toNumber(process.env.MAX_LOCATION_ACCURACY_METERS) ??
-    Math.max(radius || 0, 120);
+    dbMaxAccuracy !== null
+      ? dbMaxAccuracy
+      : toNumber(process.env.MAX_LOCATION_ACCURACY_METERS) ??
+        Math.max(radius || 0, 120);
   const maxLocationAgeMs = Number.parseInt(
     process.env.MAX_LOCATION_AGE_MS || "120000",
     10,

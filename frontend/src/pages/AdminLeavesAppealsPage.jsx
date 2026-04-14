@@ -362,6 +362,10 @@ export default function AdminLeavesAppealsPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [deptFilter, setDeptFilter] = useState("");
+  // sessionFilter:
+  //   appeals tab  → "" | "morning" | "evening"  (by appeal.session)
+  //   leaves tab   → "" | "full_day" | "half_day_morning" | "half_day_evening"
+  const [sessionFilter, setSessionFilter] = useState("");
 
   // Fetch all data on mount
   useEffect(() => {
@@ -441,9 +445,31 @@ export default function AdminLeavesAppealsPage() {
       const d = r.date ?? "";
       if (dateFrom && d < dateFrom) return false;
       if (dateTo && d > dateTo) return false;
+
+      // ── Session filter ────────────────────────────────────────────────
+      if (sessionFilter) {
+        if (type === "appeals") {
+          // Filter appeals by session (morning = Work Start, evening = Work End)
+          if (r.session !== sessionFilter) return false;
+        } else {
+          // Filter leaves:
+          //   "full_day"           → only full-day leaves
+          //   "half_day_morning"   → half-day leaves where morning is the leave session (Work Start)
+          //   "half_day_evening"   → half-day leaves where evening is the leave session (Work End)
+          if (sessionFilter === "full_day") {
+            if (r.type !== "full_day") return false;
+          } else if (sessionFilter === "half_day_morning") {
+            if (r.type !== "half_day" || r.halfDaySession !== "morning") return false;
+          } else if (sessionFilter === "half_day_evening") {
+            if (r.type !== "half_day" || r.halfDaySession !== "evening") return false;
+          }
+        }
+      }
+      // ── End session filter ────────────────────────────────────────────
+
       return true;
     });
-  }, [appeals, leaves, type, statusTab, search, deptFilter, dateFrom, dateTo]);
+  }, [appeals, leaves, type, statusTab, search, deptFilter, dateFrom, dateTo, sessionFilter]);
 
   // ── Counts ───────────────────────────────────────────────────────────────────
   const source = type === "appeals" ? appeals : leaves;
@@ -453,7 +479,7 @@ export default function AdminLeavesAppealsPage() {
     rejected: source.filter((r) => r.status === "rejected").length,
   };
 
-  const hasFilters = search || deptFilter || dateFrom || dateTo;
+  const hasFilters = search || deptFilter || dateFrom || dateTo || sessionFilter;
 
   // ── Bulk selection helpers ────────────────────────────────────────────────────
   // Only pending rows are selectable
@@ -531,7 +557,7 @@ export default function AdminLeavesAppealsPage() {
   function switchType(key) {
     setType(key);
     setStatusTab("pending");
-    setSearch(""); setDeptFilter(""); setDateFrom(""); setDateTo("");
+    setSearch(""); setDeptFilter(""); setDateFrom(""); setDateTo(""); setSessionFilter("");
     clearSelection();
   }
 
@@ -640,6 +666,32 @@ export default function AdminLeavesAppealsPage() {
               {allDepts.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
 
+            {/* ── Session filter — appeals: by session; leaves: by type/halfDaySession ── */}
+            {type === "appeals" ? (
+              <select
+                className="input-field w-auto"
+                value={sessionFilter}
+                onChange={(e) => setSessionFilter(e.target.value)}
+                title="Filter by session"
+              >
+                <option value="">All sessions</option>
+                <option value="morning">Work Start (Morning)</option>
+                <option value="evening">Work End (Evening)</option>
+              </select>
+            ) : (
+              <select
+                className="input-field w-auto"
+                value={sessionFilter}
+                onChange={(e) => setSessionFilter(e.target.value)}
+                title="Filter by leave session"
+              >
+                <option value="">All leave types</option>
+                <option value="full_day">Full Day</option>
+                <option value="half_day_morning">Half Day — Work Start leave</option>
+                <option value="half_day_evening">Half Day — Work End leave</option>
+              </select>
+            )}
+
             {/* Date range */}
             <div className="flex items-center gap-2">
               <input type="date" className="input-field w-auto" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} title="Request date from" />
@@ -648,7 +700,7 @@ export default function AdminLeavesAppealsPage() {
             </div>
 
             {hasFilters && (
-              <button onClick={() => { setSearch(""); setDeptFilter(""); setDateFrom(""); setDateTo(""); }} className="btn-secondary text-sm">
+              <button onClick={() => { setSearch(""); setDeptFilter(""); setDateFrom(""); setDateTo(""); setSessionFilter(""); }} className="btn-secondary text-sm">
                 Clear
               </button>
             )}
@@ -770,7 +822,7 @@ export default function AdminLeavesAppealsPage() {
                   No {statusTab} {type === "appeals" ? "appeals" : "leave requests"} found.
                 </p>
                 {hasFilters && (
-                  <button onClick={() => { setSearch(""); setDeptFilter(""); setDateFrom(""); setDateTo(""); }}
+                  <button onClick={() => { setSearch(""); setDeptFilter(""); setDateFrom(""); setDateTo(""); setSessionFilter(""); }}
                     className="mt-3 text-sm font-semibold text-blue-600 hover:underline">
                     Clear filters
                   </button>
@@ -807,6 +859,14 @@ export default function AdminLeavesAppealsPage() {
                           {appeal.userId?.department && (
                             <span className="status-chip bg-slate-100 text-slate-600">{appeal.userId.department}</span>
                           )}
+                          {/* Session badge — which session this appeal covers */}
+                          <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${
+                            appeal.session === "evening"
+                              ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                              : "bg-blue-50 text-blue-700 border-blue-200"
+                          }`}>
+                            {appeal.session === "evening" ? "Work End" : "Work Start"}
+                          </span>
                         </div>
                         <p className="text-xs text-slate-500 mt-0.5">{appeal.userId?.email ?? "—"}</p>
                         <p className="mt-2 text-xs text-slate-600">
@@ -877,11 +937,26 @@ export default function AdminLeavesAppealsPage() {
                           {leave.userId?.department && (
                             <span className="status-chip bg-slate-100 text-slate-600">{leave.userId.department}</span>
                           )}
+                          {/* Leave type badge */}
+                          <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${
+                            leave.type === "half_day"
+                              ? "bg-violet-50 text-violet-700 border-violet-200"
+                              : "bg-slate-50 text-slate-600 border-slate-200"
+                          }`}>
+                            {leave.type === "half_day" ? "Half Day" : "Full Day"}
+                          </span>
                         </div>
                         <p className="text-xs text-slate-500 mt-0.5">{leave.userId?.email ?? "—"}</p>
                         <p className="mt-2 text-xs text-slate-600">
                           <span className="font-medium">Leave date:</span> {formatDate(leave.date)}
                         </p>
+                        {leave.type === "half_day" && (
+                          <p className="mt-1 text-xs text-violet-600 font-medium">
+                            {leave.halfDaySession === "evening"
+                              ? "Work End waived — user must still mark Work Start attendance."
+                              : "Work Start waived — user must still mark Work End attendance."}
+                          </p>
+                        )}
                         <p className="mt-1 text-xs text-slate-500 line-clamp-2" title={leave.reason}>
                           <span className="font-medium text-slate-600">Reason:</span> {leave.reason}
                         </p>

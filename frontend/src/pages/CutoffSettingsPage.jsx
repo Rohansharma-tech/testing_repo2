@@ -1,5 +1,5 @@
 // =============================================
-// pages/CutoffSettingsPage.jsx — Attendance Window Settings
+// pages/CutoffSettingsPage.jsx — Attendance Window Settings (Work Start + Work End)
 // =============================================
 
 import { useEffect, useState } from "react";
@@ -25,12 +25,20 @@ function StatusPill({ label, color }) {
     amber: "bg-amber-50 text-amber-700 ring-amber-200",
     slate: "bg-slate-100 text-slate-500 ring-slate-200",
     blue: "bg-blue-50 text-blue-700 ring-blue-200",
+    purple: "bg-purple-50 text-purple-700 ring-purple-200",
+    rose: "bg-rose-50 text-rose-700 ring-rose-200",
+  };
+  const dotMap = {
+    green: "bg-emerald-500",
+    amber: "bg-amber-500",
+    blue: "bg-blue-500",
+    purple: "bg-purple-500",
+    slate: "bg-slate-400",
+    rose: "bg-rose-400",
   };
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ${colorMap[color] ?? colorMap.slate}`}
-    >
-      <span className={`h-1.5 w-1.5 rounded-full ${color === "green" ? "bg-emerald-500" : color === "amber" ? "bg-amber-500" : color === "blue" ? "bg-blue-500" : "bg-slate-400"}`} />
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ${colorMap[color] ?? colorMap.slate}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${dotMap[color] ?? dotMap.slate}`} />
       {label}
     </span>
   );
@@ -69,6 +77,30 @@ function TimeField({ id, label, hint, value, onChange, required = false }) {
   );
 }
 
+function Toggle({ id, checked, onChange, label }) {
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        type="button"
+        id={id}
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+          checked ? "bg-blue-600" : "bg-slate-200"
+        }`}
+      >
+        <span
+          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+            checked ? "translate-x-5" : "translate-x-0"
+          }`}
+        />
+      </button>
+      <span className="text-sm font-medium text-slate-700">{label}</span>
+    </div>
+  );
+}
+
 function Toast({ toast }) {
   if (!toast) return null;
   const isSuccess = toast.type === "success";
@@ -92,6 +124,45 @@ function Toast({ toast }) {
   );
 }
 
+// ── Session Card ───────────────────────────────────────────────────────────────
+
+function SessionCard({ title, accentColor, fields, toggle, onSubmit, saving, validationError, children }) {
+  const accent = {
+    blue: "border-blue-200 bg-blue-50",
+    indigo: "border-indigo-200 bg-indigo-50",
+  }[accentColor] || "border-slate-200 bg-slate-50";
+
+  return (
+    <section className="card">
+      <div className={`-mx-6 -mt-6 mb-6 flex items-center gap-3 rounded-t-3xl border-b px-6 py-4 ${accent}`}>
+        <div>
+          <p className="section-label">{title}</p>
+        </div>
+      </div>
+
+      <form onSubmit={onSubmit} className="space-y-5">
+        <div className="grid gap-5 sm:grid-cols-2">
+          {fields}
+        </div>
+        {validationError && (
+          <p className="text-xs text-rose-600 font-medium">{validationError}</p>
+        )}
+        {toggle}
+        {children}
+        <div className="pt-2">
+          <button
+            type="submit"
+            disabled={saving || Boolean(validationError)}
+            className="btn-primary disabled:opacity-50"
+          >
+            {saving ? "Saving..." : `Save ${title}`}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function CutoffSettingsPage() {
@@ -99,23 +170,29 @@ export default function CutoffSettingsPage() {
   const [window_, setWindow_] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // ── Window form state ────────────────────────────────────────────────────────
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
-  const [cutoffEnabled, setCutoffEnabled] = useState(true);
-  const [savingWindow, setSavingWindow] = useState(false);
+  // ── Work Start (morning) form state ──────────────────────────────────────
+  const [morningStart, setMorningStart] = useState("");
+  const [morningEnd, setMorningEnd] = useState("");
+  const [morningCutoffEnabled, setMorningCutoffEnabled] = useState(true);
+  const [savingMorning, setSavingMorning] = useState(false);
 
-  // ── Legacy cutoff form state ────────────────────────────────────────────────
+  // ── Work End (evening) form state ────────────────────────────────────────
+  const [eveningStart, setEveningStart] = useState("");
+  const [eveningEnd, setEveningEnd] = useState("");
+  const [eveningCutoffEnabled, setEveningCutoffEnabled] = useState(false);
+  const [savingEvening, setSavingEvening] = useState(false);
+
+  // ── Legacy cutoff form state ─────────────────────────────────────────────
   const [legacyCutoffTime, setLegacyCutoffTime] = useState("");
   const [savingLegacy, setSavingLegacy] = useState(false);
   const [disabling, setDisabling] = useState(false);
-
-  // ── UI state ─────────────────────────────────────────────────────────────────
-  const [toast, setToast] = useState(null);
-  const [showLegacy, setShowLegacy] = useState(false);
   const [showDisableConfirm, setShowDisableConfirm] = useState(false);
 
-  // ── Fetch settings ───────────────────────────────────────────────────────────
+  // ── UI state ─────────────────────────────────────────────────────────────
+  const [toast, setToast] = useState(null);
+  const [showLegacy, setShowLegacy] = useState(false);
+
+  // ── Fetch settings ──────────────────────────────────────────────────────
   useEffect(() => {
     async function fetchSettings() {
       try {
@@ -125,12 +202,13 @@ export default function CutoffSettingsPage() {
         ]);
         const w = windowRes.data;
         setWindow_(w);
-        setStartTime(w.attendanceStartTime || "");
-        setEndTime(w.attendanceEndTime || "");
-        setCutoffEnabled(w.cutoffEnabled ?? true);
-
-        const l = legacyRes.data;
-        setLegacyCutoffTime(l.cutoffTime || "");
+        setMorningStart(w.attendanceStartTime || "");
+        setMorningEnd(w.attendanceEndTime || "");
+        setMorningCutoffEnabled(w.cutoffEnabled ?? false);
+        setEveningStart(w.eveningStartTime || "");
+        setEveningEnd(w.eveningEndTime || "");
+        setEveningCutoffEnabled(w.eveningCutoffEnabled ?? false);
+        setLegacyCutoffTime(legacyRes.data.cutoffTime || "");
       } catch {
         showToast("error", "Failed to load attendance settings.");
       } finally {
@@ -145,47 +223,78 @@ export default function CutoffSettingsPage() {
     setTimeout(() => setToast(null), 5000);
   }
 
-  // ── Validate cross-field ─────────────────────────────────────────────────────
-  function validateWindow() {
-    if (startTime && endTime && startTime >= endTime) {
-      showToast("error", "Start time must be earlier than end time.");
-      return false;
-    }
-    return true;
-  }
+  // ── Validation ────────────────────────────────────────────────────────────
+  const morningValidationError =
+    morningStart && morningEnd && morningStart >= morningEnd
+      ? "Work Start open time must be earlier than close time."
+      : null;
 
-  // ── Save attendance window ───────────────────────────────────────────────────
-  async function handleSaveWindow(e) {
+  const eveningValidationError =
+    eveningStart && eveningEnd && eveningStart >= eveningEnd
+      ? "Work End open time must be earlier than close time."
+      : morningEnd && eveningStart && morningEnd >= eveningStart
+      ? "Work End open time must be after Work Start close time."
+      : null;
+
+  // ── Save Work Start window ────────────────────────────────────────────────
+  async function handleSaveMorning(e) {
     e.preventDefault();
-    if (!validateWindow()) return;
+    if (morningValidationError) return;
 
-    setSavingWindow(true);
+    setSavingMorning(true);
     try {
-      const payload = {
-        attendanceStartTime: startTime || null,
-        attendanceEndTime: endTime || null,
-        cutoffEnabled,
-      };
-      const res = await api.put("/settings/attendance-window", payload);
+      const res = await api.put("/settings/attendance-window", {
+        attendanceStartTime: morningStart || null,
+        attendanceEndTime: morningEnd || null,
+        cutoffEnabled: morningCutoffEnabled,
+      });
       setWindow_((prev) => ({ ...prev, ...res.data }));
 
       const parts = [];
       if (res.data.attendanceStartTime) parts.push(`opens at ${format12Hour(res.data.attendanceStartTime)}`);
       if (res.data.attendanceEndTime) parts.push(`closes at ${format12Hour(res.data.attendanceEndTime)}`);
-      const windowStr = parts.length ? `Window ${parts.join(", ")}.` : "No window boundaries set.";
+      const windowStr = parts.length ? `Work Start window ${parts.join(", ")}.` : "No Work Start window set.";
       const cronStr = res.data.cutoffEnabled && res.data.scheduledCutoff
         ? ` Auto-absent fires at ${format12Hour(res.data.scheduledCutoff)}.`
-        : " Auto-absent is disabled.";
-
+        : " Work Start auto-absent disabled.";
       showToast("success", windowStr + cronStr);
     } catch (err) {
-      showToast("error", err.response?.data?.message || "Failed to save attendance window.");
+      showToast("error", err.response?.data?.message || "Failed to save Work Start window.");
     } finally {
-      setSavingWindow(false);
+      setSavingMorning(false);
     }
   }
 
-  // ── Save legacy cutoff ───────────────────────────────────────────────────────
+  // ── Save Work End window ──────────────────────────────────────────────────
+  async function handleSaveEvening(e) {
+    e.preventDefault();
+    if (eveningValidationError) return;
+
+    setSavingEvening(true);
+    try {
+      const res = await api.put("/settings/attendance-window", {
+        eveningStartTime: eveningStart || null,
+        eveningEndTime: eveningEnd || null,
+        eveningCutoffEnabled,
+      });
+      setWindow_((prev) => ({ ...prev, ...res.data }));
+
+      const parts = [];
+      if (res.data.eveningStartTime) parts.push(`opens at ${format12Hour(res.data.eveningStartTime)}`);
+      if (res.data.eveningEndTime) parts.push(`closes at ${format12Hour(res.data.eveningEndTime)}`);
+      const windowStr = parts.length ? `Work End window ${parts.join(", ")}.` : "No Work End window set.";
+      const cronStr = res.data.eveningCutoffEnabled && res.data.scheduledEveningCutoff
+        ? ` Work End auto-absent fires at ${format12Hour(res.data.scheduledEveningCutoff)}.`
+        : " Work End auto-absent disabled.";
+      showToast("success", windowStr + cronStr);
+    } catch (err) {
+      showToast("error", err.response?.data?.message || "Failed to save Work End window.");
+    } finally {
+      setSavingEvening(false);
+    }
+  }
+
+  // ── Save legacy cutoff ────────────────────────────────────────────────────
   async function handleSaveLegacy(e) {
     e.preventDefault();
     if (!legacyCutoffTime) return;
@@ -194,7 +303,7 @@ export default function CutoffSettingsPage() {
     try {
       const res = await api.put("/settings/cutoff", {
         cutoffTime: legacyCutoffTime,
-        cutoffEnabled,
+        cutoffEnabled: morningCutoffEnabled,
       });
       setWindow_((prev) => ({ ...prev, scheduledCutoff: res.data.scheduledCutoff }));
       showToast("success", `Legacy cutoff set to ${format12Hour(legacyCutoffTime)}.`);
@@ -205,15 +314,15 @@ export default function CutoffSettingsPage() {
     }
   }
 
-  // ── Disable auto-absent ──────────────────────────────────────────────────────
+  // ── Disable auto-absent ───────────────────────────────────────────────────
   async function handleDisable() {
     setDisabling(true);
     setShowDisableConfirm(false);
     try {
       await api.delete("/settings/cutoff");
       setWindow_((prev) => ({ ...prev, cutoffEnabled: false, scheduledCutoff: null }));
-      setCutoffEnabled(false);
-      showToast("success", "Auto-absent has been disabled.");
+      setMorningCutoffEnabled(false);
+      showToast("success", "Work Start auto-absent has been disabled.");
     } catch {
       showToast("error", "Failed to disable auto-absent.");
     } finally {
@@ -221,197 +330,204 @@ export default function CutoffSettingsPage() {
     }
   }
 
-  // ── Derived status info ──────────────────────────────────────────────────────
-  function getWindowStatusPill() {
-    if (!window_) return <StatusPill label="Loading..." color="slate" />;
-    const hasBoth = window_.attendanceStartTime && window_.attendanceEndTime;
-    const hasEnd = Boolean(window_.attendanceEndTime);
-    if (!hasBoth && !hasEnd) return <StatusPill label="Not Configured" color="slate" />;
-    if (window_.cutoffEnabled && window_.scheduledCutoff)
-      return <StatusPill label={`Active — cron at ${format12Hour(window_.scheduledCutoff)}`} color="green" />;
-    if (window_.cutoffEnabled)
-      return <StatusPill label="Enabled — restart to activate cron" color="amber" />;
-    return <StatusPill label="Window set — auto-absent disabled" color="blue" />;
-  }
-
   return (
     <PageWrapper
       title="Attendance Settings"
-      description="Configure when attendance can be marked and when the auto-absent job fires."
+      description="Configure Work Start and Work End attendance windows. Users must mark attendance once per session."
     >
       <div className="space-y-6 max-w-2xl">
         <Toast toast={toast} />
 
-        {/* ── Current Status ── */}
+        {/* ── Current Status Overview ── */}
         <section className="card">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div>
-              <p className="section-label">Auto-Absent Status</p>
-              <h2 className="mt-3 text-xl font-semibold text-slate-900">Attendance Window</h2>
+              <p className="section-label">Current Configuration</p>
+              <h2 className="mt-3 text-xl font-semibold text-slate-900">Attendance Windows</h2>
             </div>
-            {!loading && getWindowStatusPill()}
+            <div className="flex flex-wrap gap-2">
+              {!loading && (
+                <>
+                  <StatusPill
+                    label={
+                      window_?.cutoffEnabled && window_?.scheduledCutoff
+                        ? `Work Start cron: ${format12Hour(window_.scheduledCutoff)}`
+                        : window_?.attendanceStartTime || window_?.attendanceEndTime
+                        ? "Work Start set — no cron"
+                        : "Work Start not set"
+                    }
+                    color={
+                      window_?.cutoffEnabled && window_?.scheduledCutoff
+                        ? "green"
+                        : window_?.attendanceStartTime || window_?.attendanceEndTime
+                        ? "blue"
+                        : "slate"
+                    }
+                  />
+                  <StatusPill
+                    label={
+                      window_?.eveningCutoffEnabled && window_?.scheduledEveningCutoff
+                        ? `Work End cron: ${format12Hour(window_.scheduledEveningCutoff)}`
+                        : window_?.eveningStartTime || window_?.eveningEndTime
+                        ? "Work End set — no cron"
+                        : "Work End not set"
+                    }
+                    color={
+                      window_?.eveningCutoffEnabled && window_?.scheduledEveningCutoff
+                        ? "purple"
+                        : window_?.eveningStartTime || window_?.eveningEndTime
+                        ? "blue"
+                        : "slate"
+                    }
+                  />
+                </>
+              )}
+            </div>
           </div>
 
           {loading ? (
             <div className="mt-6 space-y-3">
-              {[1, 2, 3].map((i) => (
+              {[1, 2, 3, 4].map((i) => (
                 <div key={i} className="h-4 w-full animate-pulse rounded bg-slate-100" />
               ))}
             </div>
           ) : (
-            <div className="mt-6">
-              <InfoRow
-                label="Attendance Start"
-                value={window_?.attendanceStartTime ? format12Hour(window_.attendanceStartTime) : "Not set (no start restriction)"}
-              />
-              <InfoRow
-                label="Attendance End"
-                value={window_?.attendanceEndTime ? format12Hour(window_.attendanceEndTime) : "Not set (no end restriction)"}
-              />
-              <InfoRow label="Timezone" value={window_?.cutoffTimeZone} />
-              <InfoRow
-                label="Auto-Absent Cron"
-                value={
-                  window_?.cutoffEnabled && window_?.scheduledCutoff
-                    ? `Firing daily at ${format12Hour(window_.scheduledCutoff)}`
-                    : window_?.cutoffEnabled
-                    ? "Enabled — will activate on next save"
-                    : "Disabled"
-                }
-              />
-              <InfoRow
-                label="Last Updated"
-                value={
-                  window_?.updatedAt
-                    ? new Date(window_.updatedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })
-                    : "Never"
-                }
-              />
+            <div className="mt-6 grid sm:grid-cols-2 gap-4">
+              {/* Work Start summary */}
+              <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-blue-700 mb-3">Work Start Session</p>
+                <InfoRow label="Open" value={window_?.attendanceStartTime ? format12Hour(window_.attendanceStartTime) : "Not set"} />
+                <InfoRow label="Close" value={window_?.attendanceEndTime ? format12Hour(window_.attendanceEndTime) : "Not set"} />
+                <InfoRow label="Auto-absent" value={window_?.cutoffEnabled ? (window_?.scheduledCutoff ? `Fires at ${format12Hour(window_.scheduledCutoff)}` : "Enabled") : "Disabled"} />
+              </div>
+              {/* Work End summary */}
+              <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-indigo-700 mb-3">Work End Session</p>
+                <InfoRow label="Open" value={window_?.eveningStartTime ? format12Hour(window_.eveningStartTime) : "Not set"} />
+                <InfoRow label="Close" value={window_?.eveningEndTime ? format12Hour(window_.eveningEndTime) : "Not set"} />
+                <InfoRow label="Auto-absent" value={window_?.eveningCutoffEnabled ? (window_?.scheduledEveningCutoff ? `Fires at ${format12Hour(window_.scheduledEveningCutoff)}` : "Enabled") : "Disabled"} />
+              </div>
             </div>
           )}
+
+          <div className="mt-4">
+            <InfoRow label="Timezone" value={window_?.cutoffTimeZone} />
+            <InfoRow
+              label="Last Updated"
+              value={
+                window_?.updatedAt
+                  ? new Date(window_.updatedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })
+                  : "Never"
+              }
+            />
+          </div>
         </section>
 
-        {/* ── How It Works ── */}
-        <section className="rounded-2xl border border-blue-100 bg-blue-50 p-5">
-          <p className="text-sm font-semibold text-blue-800">How the Attendance Window Works</p>
-          <ul className="mt-3 space-y-2 text-sm text-blue-700">
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 text-blue-400">→</span>
-              <b>Start Time:</b> Users attempting to mark attendance before this time are blocked until the window opens.
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 text-blue-400">→</span>
-              <b>End Time:</b> Users are blocked from marking attendance after this time. The auto-absent cron fires at this time.
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 text-blue-400">→</span>
-              If neither is set, no boundary is enforced and the system uses the legacy Cutoff Time below.
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 text-blue-400">→</span>
-              Users with a pending appeal re-validation are governed by their <b>appeal-specific time window</b>, not this global one.
-            </li>
-          </ul>
-        </section>
 
-        {/* ── Configure Window Form ── */}
-        <section className="card">
-          <p className="section-label">Configure Attendance Window</p>
-          <h2 className="mt-3 text-xl font-semibold text-slate-900">Set Time Boundaries</h2>
-          <p className="mt-2 text-sm text-slate-500">
-            Leave a field blank to remove that boundary. Changes take effect immediately.
-          </p>
-
-          <form onSubmit={handleSaveWindow} className="mt-6 space-y-5">
-            <div className="grid gap-5 sm:grid-cols-2">
+        {/* ── Work Start Session Form ── */}
+        <SessionCard
+          title="Work Start Session"
+          accentColor="blue"
+          saving={savingMorning}
+          onSubmit={handleSaveMorning}
+          validationError={morningValidationError}
+          fields={
+            <>
               <TimeField
-                id="attendance-start-time"
-                label="Start Time"
+                id="work-start-open-time"
+                label="Window Open Time"
                 hint="(earliest mark allowed)"
-                value={startTime}
-                onChange={setStartTime}
+                value={morningStart}
+                onChange={setMorningStart}
               />
               <TimeField
-                id="attendance-end-time"
-                label="End Time"
+                id="work-start-close-time"
+                label="Window Close Time"
                 hint="(latest mark / cron fires here)"
-                value={endTime}
-                onChange={setEndTime}
+                value={morningEnd}
+                onChange={setMorningEnd}
               />
-            </div>
-
-            {startTime && endTime && startTime >= endTime && (
-              <p className="text-xs text-rose-600 font-medium">⚠ Start time must be earlier than end time.</p>
-            )}
-
-            {/* Auto-absent toggle */}
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                id="cutoff-enabled-toggle"
-                role="switch"
-                aria-checked={cutoffEnabled}
-                onClick={() => setCutoffEnabled((v) => !v)}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                  cutoffEnabled ? "bg-blue-600" : "bg-slate-200"
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
-                    cutoffEnabled ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </button>
-              <span className="text-sm font-medium text-slate-700">
-                {cutoffEnabled ? "Auto-absent enabled (fires at end time daily)" : "Auto-absent disabled"}
-              </span>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3 pt-2">
-              <button
-                id="save-window-btn"
-                type="submit"
-                disabled={savingWindow || (startTime && endTime && startTime >= endTime)}
-                className="btn-primary disabled:opacity-50"
-              >
-                {savingWindow ? "Saving…" : "Save Window Settings"}
-              </button>
-
-              {window_?.cutoffEnabled && (
-                showDisableConfirm ? (
-                  <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5">
-                    <p className="text-xs font-medium text-rose-700">Disable auto-absent?</p>
-                    <button
-                      type="button"
-                      disabled={disabling}
-                      onClick={handleDisable}
-                      className="rounded-xl bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
-                    >
-                      {disabling ? "Disabling…" : "Yes, disable"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowDisableConfirm(false)}
-                      className="rounded-xl border border-rose-200 bg-white px-3 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
+            </>
+          }
+          toggle={
+            <Toggle
+              id="work-start-cutoff-toggle"
+              checked={morningCutoffEnabled}
+              onChange={setMorningCutoffEnabled}
+              label={morningCutoffEnabled ? "Work Start auto-absent enabled (fires at close time)" : "Work Start auto-absent disabled"}
+            />
+          }
+        >
+          {window_?.cutoffEnabled && (
+            <div>
+              {showDisableConfirm ? (
+                <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5">
+                  <p className="text-xs font-medium text-rose-700">Disable Work Start auto-absent?</p>
                   <button
-                    id="disable-cutoff-btn"
                     type="button"
                     disabled={disabling}
-                    onClick={() => setShowDisableConfirm(true)}
-                    className="btn-secondary text-red-600 hover:border-red-200 hover:bg-red-50 disabled:opacity-50"
+                    onClick={handleDisable}
+                    className="rounded-xl bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
                   >
-                    Disable Auto-Absent
+                    {disabling ? "Disabling..." : "Yes, disable"}
                   </button>
-                )
+                  <button
+                    type="button"
+                    onClick={() => setShowDisableConfirm(false)}
+                    className="rounded-xl border border-rose-200 bg-white px-3 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  id="disable-work-start-cutoff-btn"
+                  type="button"
+                  disabled={disabling}
+                  onClick={() => setShowDisableConfirm(true)}
+                  className="btn-secondary text-red-600 hover:border-red-200 hover:bg-red-50 disabled:opacity-50"
+                >
+                  Disable Work Start Auto-Absent
+                </button>
               )}
             </div>
-          </form>
-        </section>
+          )}
+        </SessionCard>
+
+        {/* ── Work End Session Form ── */}
+        <SessionCard
+          title="Work End Session"
+          accentColor="indigo"
+          saving={savingEvening}
+          onSubmit={handleSaveEvening}
+          validationError={eveningValidationError}
+          fields={
+            <>
+              <TimeField
+                id="work-end-open-time"
+                label="Window Open Time"
+                hint="(earliest mark allowed)"
+                value={eveningStart}
+                onChange={setEveningStart}
+              />
+              <TimeField
+                id="work-end-close-time"
+                label="Window Close Time"
+                hint="(latest mark / cron fires here)"
+                value={eveningEnd}
+                onChange={setEveningEnd}
+              />
+            </>
+          }
+          toggle={
+            <Toggle
+              id="work-end-cutoff-toggle"
+              checked={eveningCutoffEnabled}
+              onChange={setEveningCutoffEnabled}
+              label={eveningCutoffEnabled ? "Work End auto-absent enabled (fires at close time)" : "Work End auto-absent disabled"}
+            />
+          }
+        />
 
         {/* ── Legacy Cutoff (collapsible) ── */}
         <section className="card">
@@ -424,7 +540,7 @@ export default function CutoffSettingsPage() {
               <p className="section-label">Legacy Fallback</p>
               <h2 className="mt-1 text-base font-semibold text-slate-700">
                 Legacy Cutoff Time
-                <span className="ml-2 text-xs font-normal text-slate-400">(used only if no End Time is set above)</span>
+                <span className="ml-2 text-xs font-normal text-slate-400">(used only if no Work Start Close Time is set above)</span>
               </h2>
             </div>
             <svg
@@ -438,7 +554,7 @@ export default function CutoffSettingsPage() {
           {showLegacy && (
             <form onSubmit={handleSaveLegacy} className="mt-5 space-y-5">
               <p className="text-sm text-slate-500">
-                This legacy field is superseded by the End Time above. Only use this if you need backward compatibility.
+                This legacy field is superseded by the Work Start Close Time above. Only use this if you need backward compatibility.
               </p>
               <TimeField
                 id="legacy-cutoff-time"
@@ -454,7 +570,7 @@ export default function CutoffSettingsPage() {
                   disabled={savingLegacy || !legacyCutoffTime}
                   className="btn-primary disabled:opacity-50"
                 >
-                  {savingLegacy ? "Saving…" : "Save Legacy Cutoff"}
+                  {savingLegacy ? "Saving..." : "Save Legacy Cutoff"}
                 </button>
               </div>
             </form>

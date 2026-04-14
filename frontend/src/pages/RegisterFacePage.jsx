@@ -161,8 +161,8 @@ export default function RegisterFacePage() {
           <div className="card py-4">
             <p className="section-label">Models</p>
             <div className="mt-3">
-              <span className={modelsLoaded ? "status-chip status-chip-success" : "status-chip status-chip-neutral"}>
-                {modelsLoaded ? "Ready" : "Loading…"}
+              <span className={user?.hasFace || modelsLoaded ? "status-chip status-chip-success" : "status-chip status-chip-neutral"}>
+                {user?.hasFace ? "Not Required" : modelsLoaded ? "Ready" : "Loading…"}
               </span>
             </div>
           </div>

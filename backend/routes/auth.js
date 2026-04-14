@@ -86,7 +86,7 @@ router.post("/logout", (_req, res) => {
 });
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
-// Called on every page load to restore session. Must include profileImage.
+// Protected endpoint — requires a valid token. Used by authenticated pages.
 router.get("/me", protect, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select(
@@ -113,6 +113,52 @@ router.get("/me", protect, async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ message: "Failed to fetch user." });
+  }
+});
+
+// ── GET /api/auth/session ─────────────────────────────────────────────────────
+// Silent session-restore endpoint — always returns 200 (never 401).
+// Returns the user object when a valid cookie is present, or { user: null }
+// when there is no token / the token is expired.
+// The frontend calls THIS on every page load so the browser console stays clean.
+router.get("/session", async (req, res) => {
+  try {
+    let token = req.cookies?.token;
+    if (!token) {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        token = authHeader.split(" ")[1];
+      }
+    }
+
+    if (!token) return res.json({ user: null });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET || "fallback_secret");
+    } catch {
+      return res.json({ user: null }); // expired / invalid — not an error
+    }
+
+    const user = await User.findById(decoded.id).select("-password -faceDescriptor");
+    if (!user || user.isDeleted) return res.json({ user: null });
+
+    return res.json({
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        hasFace: user.hasFace,
+        department: user.department,
+        profileImage: user.profileImage,
+        profileImageUrl: profileImageUrl(user.profileImage),
+      },
+    });
+  } catch (err) {
+    // Unexpected server error — still return 200 so the page doesn't break
+    console.error("[/session] Unexpected error:", err.message);
+    return res.json({ user: null });
   }
 });
 

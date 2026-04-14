@@ -13,9 +13,17 @@ router.use(protect);
 
 // ---- POST /api/leaves (User applies for leave) ----
 router.post("/", async (req, res) => {
-  const { date, reason } = req.body;
+  const { date, reason, type = "full_day", halfDaySession = null } = req.body;
   if (!date || !reason) {
     return res.status(400).json({ message: "Date and reason are required." });
+  }
+  if (!["full_day", "half_day"].includes(type)) {
+    return res.status(400).json({ message: "type must be 'full_day' or 'half_day'." });
+  }
+  if (type === "half_day" && !["morning", "evening"].includes(halfDaySession)) {
+    return res.status(400).json({
+      message: "halfDaySession must be 'morning' (Work Start leave) or 'evening' (Work End leave) for half-day requests.",
+    });
   }
 
   // ── Future-only validation ────────────────────────────────────────────────
@@ -44,6 +52,8 @@ router.post("/", async (req, res) => {
       userId: req.user.id,
       date,
       reason,
+      type,
+      halfDaySession: type === "half_day" ? halfDaySession : null,
       status: "pending",
     });
 
@@ -106,28 +116,41 @@ router.put("/:id/status", adminOnly, async (req, res) => {
     await leave.save();
 
     if (status === "approved") {
-      // ✅ Approved → upsert Attendance as LEAVE, no penalty, adminApproved so cron skips
-      await Attendance.findOneAndUpdate(
-        { userId: leave.userId, date: leave.date },
-        {
-          $set: {
-            userId: leave.userId,
-            date: leave.date,
-            status: "leave",
-            penalty: false,
-            source: "leave",
-            reason: null,
-            adminApproved: true,
-            autoMarked: false,
-            time: new Date().toTimeString().substring(0, 5),
-          },
-        },
-        { upsert: true, setDefaultsOnInsert: true }
-      );
+      const leaveFields = {
+        status: "leave",
+        penalty: false,
+        source: "leave",
+        reason: leave.type === "half_day" ? "half_day_leave" : "full_day_leave",
+        adminApproved: true,
+        autoMarked: false,
+        time: new Date().toTimeString().substring(0, 5),
+      };
+
+      if (leave.type === "half_day") {
+        // Half-day: mark only the chosen session as leave.
+        // leave.halfDaySession = "morning" → Work Start is leave, must attend Work End
+        // leave.halfDaySession = "evening" → Work End is leave, must attend Work Start
+        const leaveSession = leave.halfDaySession || "morning"; // default morning for safety
+        await Attendance.findOneAndUpdate(
+          { userId: leave.userId, date: leave.date, session: leaveSession },
+          { $set: { userId: leave.userId, date: leave.date, session: leaveSession, ...leaveFields } },
+          { upsert: true, setDefaultsOnInsert: true }
+        );
+      } else {
+        // Full-day: mark BOTH sessions as leave so the cron skips them.
+        await Promise.all(
+          ["morning", "evening"].map((session) =>
+            Attendance.findOneAndUpdate(
+              { userId: leave.userId, date: leave.date, session },
+              { $set: { userId: leave.userId, date: leave.date, session, ...leaveFields } },
+              { upsert: true, setDefaultsOnInsert: true }
+            )
+          )
+        );
+      }
     }
-    // ❌ Rejected → do NOT touch Attendance at all.
-    // The user must come mark attendance manually.
-    // If they don't, the auto-absent cron will mark them absent (no penalty).
+    // Rejected → do NOT touch Attendance at all.
+    // The user must mark attendance manually or the auto-absent cron will mark them absent.
 
     return res.json({ message: `Leave request ${status}.`, leave });
   } catch (err) {

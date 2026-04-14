@@ -21,6 +21,22 @@ const leaveRequestSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    // "full_day" = no attendance required for the day.
+    // "half_day" = one session is waived; user must still attend the other.
+    type: {
+      type: String,
+      enum: ["full_day", "half_day"],
+      default: "full_day",
+    },
+    // Which session is covered by the half-day leave.
+    // "morning" = Work Start is leave; user must mark Work End.
+    // "evening" = Work End is leave; user must mark Work Start.
+    // null for full_day leaves.
+    halfDaySession: {
+      type: String,
+      enum: ["morning", "evening", null],
+      default: null,
+    },
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],

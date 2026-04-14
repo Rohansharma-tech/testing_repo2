@@ -8,37 +8,48 @@ const { getDateTimeParts } = require("../utils/attendance");
 router.use(protect);
 
 // ---- POST /api/appeals (User applies for an appeal) ----
+// Body: { date, reason, session }  session = "morning" | "evening" (default: "morning")
 router.post("/", async (req, res) => {
-  const { date, reason } = req.body;
+  const { date, reason, session = "morning" } = req.body;
+
   if (!date || !reason) {
     return res.status(400).json({ message: "Date and reason are required." });
   }
-
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({ message: "date must be in YYYY-MM-DD format.", code: "INVALID_DATE_FORMAT" });
   }
+  if (!["morning", "evening"].includes(session)) {
+    return res.status(400).json({ message: "session must be 'morning' (Work Start) or 'evening' (Work End)." });
+  }
+
   try {
-    // 1. Verify that Attendance record exists, is absent, and was marked via cutoff.
-    const attendance = await Attendance.findOne({ userId: req.user.id, date });
+    // 1. Verify that an Attendance record exists FOR THIS SESSION, is absent, and was auto-marked by cutoff.
+    const attendance = await Attendance.findOne({ userId: req.user.id, date, session });
     const isCutoff =
       attendance &&
       (attendance.source === "cutoff" ||
         attendance.source === "auto_cutoff" ||
         attendance.reason === "auto_absent");
+
     if (!attendance || attendance.status !== "absent" || !isCutoff) {
-      return res.status(400).json({ message: "You can only appeal an auto-absent cutoff record." });
+      return res.status(400).json({
+        message: `You can only appeal an auto-absent cutoff record. No eligible ${session === "evening" ? "Work End" : "Work Start"} record found for this date.`,
+      });
     }
 
-    // 2. Prevent duplicate appeals for the same date
-    const existing = await Appeal.findOne({ userId: req.user.id, date });
+    // 2. Prevent duplicate appeal for the same date + session
+    const existing = await Appeal.findOne({ userId: req.user.id, date, session });
     if (existing) {
-      return res.status(409).json({ message: "You have already appealed for this date." });
+      return res.status(409).json({
+        message: `You have already appealed for the ${session === "evening" ? "Work End" : "Work Start"} session on this date.`,
+      });
     }
 
     const appeal = await Appeal.create({
       userId: req.user.id,
       attendanceId: attendance._id,
       date,
+      session,          // "morning" | "evening"
       reason,
       status: "pending",
     });
@@ -46,7 +57,7 @@ router.post("/", async (req, res) => {
     return res.status(201).json({ message: "Appeal submitted successfully.", appeal });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(409).json({ message: "You have already appealed for this date." });
+      return res.status(409).json({ message: "You have already appealed for this session on this date." });
     }
     return res.status(500).json({ message: "Server error while submitting appeal." });
   }
@@ -72,7 +83,6 @@ router.get("/all", adminOnly, async (req, res) => {
         select: "name email department profileImage isDeleted",
       })
       .sort({ createdAt: -1 });
-    // Remove records whose user has been soft-deleted
     const visible = appeals.filter((a) => a.userId !== null);
     return res.json(visible);
   } catch (err) {
@@ -86,26 +96,17 @@ router.get("/all", adminOnly, async (req, res) => {
 //   { status: "approved", adminResponse: "..." }
 //
 // Body for approval WITH re-validation:
-//   {
-//     status: "approved",
-//     requiresRevalidation: true,
-//     appealDate: "YYYY-MM-DD",   // date the user must mark attendance
-//     appealStartTime: "HH:MM",
-//     appealEndTime:   "HH:MM",
-//     adminResponse: "..."
-//   }
+//   { status: "approved", requiresRevalidation: true, appealDate, appealStartTime, appealEndTime, adminResponse }
 //
 // Body for rejection:
 //   { status: "rejected", adminResponse: "..." }
 //
+// Full-day absent rule:
+//   If the appeal is for the MORNING (Work Start) session and is rejected,
+//   the system also marks the EVENING (Work End) session as absent+penalty.
+//
 router.put("/:id/status", adminOnly, async (req, res) => {
-  const {
-    status,
-    adminResponse,
-    requiresRevalidation,
-    appealStartTime,
-    appealEndTime,
-  } = req.body;
+  const { status, adminResponse, requiresRevalidation, appealStartTime, appealEndTime } = req.body;
 
   if (!["approved", "rejected"].includes(status)) {
     return res.status(400).json({ message: "Invalid status." });
@@ -113,7 +114,6 @@ router.put("/:id/status", adminOnly, async (req, res) => {
 
   const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-  // Validate re-validation fields when requested
   if (status === "approved" && requiresRevalidation) {
     if (!appealStartTime || !TIME_RE.test(appealStartTime)) {
       return res.status(400).json({ message: "appealStartTime must be in HH:MM 24-hour format." });
@@ -130,7 +130,6 @@ router.put("/:id/status", adminOnly, async (req, res) => {
     const appeal = await Appeal.findById(req.params.id);
     if (!appeal) return res.status(404).json({ message: "Appeal not found." });
 
-    // Guard: do not re-process an already decided appeal
     if (appeal.status !== "pending") {
       return res.status(400).json({ message: `Appeal is already ${appeal.status}.` });
     }
@@ -141,25 +140,23 @@ router.put("/:id/status", adminOnly, async (req, res) => {
     if (status === "approved") {
       if (requiresRevalidation) {
         // ── Approve WITH re-validation ─────────────────────────────────────────
-        // Attendance stays ABSENT; user must self-mark within the appeal window.
+        // Attendance stays ABSENT until the user re-marks within the given window.
         appeal.requiresRevalidation = true;
-        // Enforce the re-validation date to match the appeal's strictly original date
-        appeal.appealDate = appeal.date;
+        appeal.appealDate = appeal.date;      // re-validation must happen on the appeal's own date
         appeal.appealStartTime = appealStartTime;
         appeal.appealEndTime = appealEndTime;
         appeal.revalidationStatus = "pending";
         await appeal.save();
 
-        // Update attendance: lock from cron, set source so frontend knows why
         await Attendance.updateOne(
           { _id: appeal.attendanceId },
           {
             $set: {
-              status: "absent",              // stays absent until user marks
-              source: "appeal_approval",     // signals "awaiting re-validation"
-              reason: null,                  // clear "auto_absent"
-              adminApproved: true,           // lock from auto-absent cron
-              penalty: false,               // no penalty yet
+              status: "absent",          // stays absent until user re-marks
+              source: "appeal_approval", // signals "awaiting re-validation"
+              reason: null,              // clear "auto_absent"
+              adminApproved: true,       // lock from auto-absent cron
+              penalty: false,
             },
           }
         );
@@ -186,11 +183,16 @@ router.put("/:id/status", adminOnly, async (req, res) => {
           }
         );
 
+        // NOTE: Approving morning = present naturally requires the user to mark
+        // evening — that's enforced by the normal dual-session attendance flow.
+
         return res.json({ message: "Appeal approved. Attendance marked as present.", appeal });
       }
     } else {
       // ── Rejected ──────────────────────────────────────────────────────────────
       await appeal.save();
+
+      // Mark the appealed session as absent+penalty
       await Attendance.updateOne(
         { _id: appeal.attendanceId },
         {
@@ -202,6 +204,38 @@ router.put("/:id/status", adminOnly, async (req, res) => {
           },
         }
       );
+
+      // ── Full-day absent rule ───────────────────────────────────────────────────
+      // If the rejected appeal is for Work Start (morning), the whole day is lost:
+      // also mark Work End (evening) as absent+penalty if not already present.
+      if ((appeal.session || "morning") === "morning") {
+        const dateParts = getDateTimeParts();
+        await Attendance.findOneAndUpdate(
+          { userId: appeal.userId, date: appeal.date, session: "evening" },
+          {
+            $set: {
+              userId: appeal.userId,
+              date: appeal.date,
+              session: "evening",
+              status: "absent",
+              penalty: true,
+              source: "auto_cutoff",
+              reason: "morning_appeal_failed",
+              autoMarked: true,
+              adminApproved: false,
+              latitude: null,
+              longitude: null,
+              distanceFromGeofence: null,
+              locationAccuracy: null,
+              locationTimestamp: null,
+              time: dateParts.time,
+              markedAt: dateParts.now,
+            },
+          },
+          { upsert: true, setDefaultsOnInsert: true }
+        );
+        console.log(`⚖️ [Appeals] Morning appeal rejected for user ${appeal.userId} on ${appeal.date} — evening auto-marked absent.`);
+      }
 
       return res.json({ message: "Appeal rejected.", appeal });
     }

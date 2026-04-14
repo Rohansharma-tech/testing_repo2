@@ -25,18 +25,20 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount: hit /auth/me — if the HttpOnly cookie is valid the server
-  // returns the user profile; if not (no cookie / expired) it returns 401
-  // and the axios interceptor redirects to /login.
+  // On mount: hit /auth/session — always returns 200 with either the user object
+  // or { user: null }. This avoids the red 401 console error that /auth/me
+  // produces when the user isn't logged in yet.
   useEffect(() => {
     let isMounted = true;
 
     async function restoreSession() {
       try {
-        const res = await api.get("/auth/me");
-        if (isMounted) setUser(normalizeUser(res.data));
+        const res = await api.get("/auth/session");
+        if (isMounted) {
+          setUser(res.data.user ? normalizeUser(res.data.user) : null);
+        }
       } catch {
-        // 401 → no valid session, stay on login page
+        // Unexpected network error — treat as no session
         if (isMounted) setUser(null);
       } finally {
         if (isMounted) setLoading(false);

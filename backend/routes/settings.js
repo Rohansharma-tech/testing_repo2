@@ -12,6 +12,9 @@ const {
   scheduleCutoffJob,
   cancelCutoffJob,
   getScheduledCutoff,
+  scheduleEveningCutoffJob,
+  cancelEveningCutoffJob,
+  getScheduledEveningCutoff,
 } = require("../services/autoCutoffScheduler");
 
 function normalizeFaceDescriptor(faceDescriptor) {
@@ -22,10 +25,6 @@ function normalizeFaceDescriptor(faceDescriptor) {
   return normalized.every((value) => Number.isFinite(value)) ? normalized : null;
 }
 
-/**
- * Euclidean distance between two 128-dimensional face descriptors.
- * Same threshold used by face-api.js on the frontend (0.6).
- */
 const FACE_MATCH_THRESHOLD = 0.6;
 
 function euclideanDistance(a, b) {
@@ -38,11 +37,11 @@ function euclideanDistance(a, b) {
 }
 
 // ---- GET /api/settings/geofence ----
-// Returns the *active* geofence config (DB override wins over .env)
 router.get("/geofence", protect, async (req, res) => {
   try {
-    const settings = await OrganizationSettings.getSingleton();
-    const geofence = getGeofenceConfig(settings);
+    // Use lean() to always get a fresh plain object — avoids Mongoose document cache
+    const settings = await OrganizationSettings.findOne({ _singleton: "global" }).lean();
+    const geofence = getGeofenceConfig(settings || {});
 
     return res.json({
       latitude: geofence.latitude,
@@ -59,7 +58,6 @@ router.get("/geofence", protect, async (req, res) => {
 });
 
 // ---- GET /api/settings/geofence-db ----
-// Returns only the DB-stored geofence values (null fields = not set yet)
 router.get("/geofence-db", protect, adminOnly, async (req, res) => {
   try {
     const settings = await OrganizationSettings.getSingleton();
@@ -67,6 +65,7 @@ router.get("/geofence-db", protect, adminOnly, async (req, res) => {
       latitude: settings.geofenceLatitude,
       longitude: settings.geofenceLongitude,
       radius: settings.geofenceRadius,
+      maxAccuracyMeters: settings.maxAccuracyMeters ?? null,
       updatedAt: settings.updatedAt,
     });
   } catch (err) {
@@ -75,11 +74,14 @@ router.get("/geofence-db", protect, adminOnly, async (req, res) => {
 });
 
 // ---- PUT /api/settings/geofence-db ----
-// Saves lat/lng/radius to DB; takes effect immediately for all future requests.
 router.put("/geofence-db", protect, adminOnly, async (req, res) => {
   const latitude = Number(req.body.latitude);
   const longitude = Number(req.body.longitude);
   const radius = Number(req.body.radius);
+  // maxAccuracyMeters is optional — if not provided, keep existing DB value
+  const maxAccuracyMeters = req.body.maxAccuracyMeters !== undefined
+    ? Number(req.body.maxAccuracyMeters)
+    : undefined;
 
   if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
     return res.status(400).json({ message: "latitude must be a number between -90 and 90." });
@@ -90,20 +92,27 @@ router.put("/geofence-db", protect, adminOnly, async (req, res) => {
   if (!Number.isFinite(radius) || radius <= 0) {
     return res.status(400).json({ message: "radius must be a positive number (metres)." });
   }
+  if (maxAccuracyMeters !== undefined && (!Number.isFinite(maxAccuracyMeters) || maxAccuracyMeters < 10)) {
+    return res.status(400).json({ message: "maxAccuracyMeters must be a number >= 10." });
+  }
 
   try {
     const settings = await OrganizationSettings.getSingleton();
     settings.geofenceLatitude = latitude;
     settings.geofenceLongitude = longitude;
     settings.geofenceRadius = radius;
+    if (maxAccuracyMeters !== undefined) settings.maxAccuracyMeters = maxAccuracyMeters;
     settings.lastUpdatedBy = req.user.id;
     await settings.save();
+
+    console.log(`📍 [Geofence] Updated: lat=${latitude}, lng=${longitude}, radius=${radius}m by user ${req.user.id}`);
 
     return res.json({
       message: "Geofence location saved and active.",
       latitude: settings.geofenceLatitude,
       longitude: settings.geofenceLongitude,
       radius: settings.geofenceRadius,
+      maxAccuracyMeters: settings.maxAccuracyMeters ?? null,
       updatedAt: settings.updatedAt,
     });
   } catch (err) {
@@ -151,7 +160,6 @@ router.put("/register-face", protect, async (req, res) => {
     }
 
     // ── Global uniqueness check ────────────────────────────────────────────────
-    // Scan all other registered users and reject if this face is too similar.
     const otherUsers = await User.find(
       { hasFace: true, _id: { $ne: req.user.id } },
       { faceDescriptor: 1, name: 1 }
@@ -167,7 +175,6 @@ router.put("/register-face", protect, async (req, res) => {
         });
       }
     }
-    // ── End uniqueness check ───────────────────────────────────────────────────
 
     await User.findByIdAndUpdate(
       req.user.id,
@@ -183,7 +190,7 @@ router.put("/register-face", protect, async (req, res) => {
 });
 
 // =============================================================
-// CUTOFF TIME ENDPOINTS (Admin Only)
+// CUTOFF TIME ENDPOINTS (Admin Only) — Legacy
 // =============================================================
 
 // ---- GET /api/settings/cutoff ----
@@ -268,16 +275,22 @@ router.delete("/cutoff", protect, adminOnly, async (req, res) => {
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 // ---- GET /api/settings/attendance-window ----
-// Returns the attendance start/end time window + cutoff meta.
 router.get("/attendance-window", protect, adminOnly, async (req, res) => {
   try {
     const settings = await OrganizationSettings.getSingleton();
     return res.json({
+      // Morning session
       attendanceStartTime: settings.attendanceStartTime,
       attendanceEndTime: settings.attendanceEndTime,
       cutoffEnabled: settings.cutoffEnabled,
-      cutoffTimeZone: settings.cutoffTimeZone,
       scheduledCutoff: getScheduledCutoff(),
+      // Evening session
+      eveningStartTime: settings.eveningStartTime,
+      eveningEndTime: settings.eveningEndTime,
+      eveningCutoffEnabled: settings.eveningCutoffEnabled,
+      scheduledEveningCutoff: getScheduledEveningCutoff(),
+      // Shared
+      cutoffTimeZone: settings.cutoffTimeZone,
       updatedAt: settings.updatedAt,
     });
   } catch (err) {
@@ -286,62 +299,96 @@ router.get("/attendance-window", protect, adminOnly, async (req, res) => {
 });
 
 // ---- PUT /api/settings/attendance-window ----
-// Saves attendanceStartTime and/or attendanceEndTime.
-// When attendanceEndTime is set it ALSO re-drives the auto-absent cron
-// (takes priority over the legacy cutoffTime).
 router.put("/attendance-window", protect, adminOnly, async (req, res) => {
-  const { attendanceStartTime, attendanceEndTime, cutoffEnabled, cutoffTimeZone } = req.body;
+  const {
+    attendanceStartTime,
+    attendanceEndTime,
+    cutoffEnabled,
+    cutoffTimeZone,
+    eveningStartTime,
+    eveningEndTime,
+    eveningCutoffEnabled,
+  } = req.body;
 
-  // Validate whichever fields were supplied
+  // Validate morning fields
   if (attendanceStartTime !== undefined && attendanceStartTime !== null && attendanceStartTime !== "") {
     if (!TIME_RE.test(attendanceStartTime)) {
-      return res.status(400).json({
-        message: "attendanceStartTime must be in HH:MM 24-hour format (e.g. '08:00').",
-      });
+      return res.status(400).json({ message: "attendanceStartTime must be in HH:MM 24-hour format (e.g. '08:00')." });
     }
   }
   if (attendanceEndTime !== undefined && attendanceEndTime !== null && attendanceEndTime !== "") {
     if (!TIME_RE.test(attendanceEndTime)) {
-      return res.status(400).json({
-        message: "attendanceEndTime must be in HH:MM 24-hour format (e.g. '10:00').",
-      });
+      return res.status(400).json({ message: "attendanceEndTime must be in HH:MM 24-hour format (e.g. '10:00')." });
     }
   }
-  if (
-    attendanceStartTime && attendanceEndTime &&
-    attendanceStartTime >= attendanceEndTime
-  ) {
-    return res.status(400).json({
-      message: "attendanceStartTime must be earlier than attendanceEndTime.",
-    });
+  if (attendanceStartTime && attendanceEndTime && attendanceStartTime >= attendanceEndTime) {
+    return res.status(400).json({ message: "Morning start time must be earlier than morning end time." });
+  }
+
+  // Validate evening fields
+  if (eveningStartTime !== undefined && eveningStartTime !== null && eveningStartTime !== "") {
+    if (!TIME_RE.test(eveningStartTime)) {
+      return res.status(400).json({ message: "eveningStartTime must be in HH:MM 24-hour format (e.g. '17:00')." });
+    }
+  }
+  if (eveningEndTime !== undefined && eveningEndTime !== null && eveningEndTime !== "") {
+    if (!TIME_RE.test(eveningEndTime)) {
+      return res.status(400).json({ message: "eveningEndTime must be in HH:MM 24-hour format (e.g. '19:00')." });
+    }
+  }
+  if (eveningStartTime && eveningEndTime && eveningStartTime >= eveningEndTime) {
+    return res.status(400).json({ message: "Evening start time must be earlier than evening end time." });
+  }
+
+  // Ensure morning end < evening start (if both set)
+  const effectiveMorningEnd = attendanceEndTime ?? null;
+  const effectiveEveningStart = eveningStartTime ?? null;
+  if (effectiveMorningEnd && effectiveEveningStart && effectiveMorningEnd >= effectiveEveningStart) {
+    return res.status(400).json({ message: "Morning end time must be earlier than evening start time." });
   }
 
   try {
     const settings = await OrganizationSettings.getSingleton();
 
-    // Null means "clear this boundary"
-    if (attendanceStartTime !== undefined) {
-      settings.attendanceStartTime = attendanceStartTime || null;
-    }
-    if (attendanceEndTime !== undefined) {
-      settings.attendanceEndTime = attendanceEndTime || null;
-    }
+    // Morning window
+    if (attendanceStartTime !== undefined) settings.attendanceStartTime = attendanceStartTime || null;
+    if (attendanceEndTime !== undefined) settings.attendanceEndTime = attendanceEndTime || null;
     if (cutoffTimeZone) settings.cutoffTimeZone = cutoffTimeZone;
 
-    // cutoffEnabled controls whether the auto-absent cron fires
-    const shouldEnable = cutoffEnabled !== false && cutoffEnabled !== undefined
+    // Properly handle false: only fall back to existing value when the field was not sent at all.
+    const shouldEnableMorning = cutoffEnabled !== undefined
       ? Boolean(cutoffEnabled)
       : settings.cutoffEnabled;
-    settings.cutoffEnabled = shouldEnable;
+    settings.cutoffEnabled = shouldEnableMorning;
+
+    // Evening window
+    if (eveningStartTime !== undefined) settings.eveningStartTime = eveningStartTime || null;
+    if (eveningEndTime !== undefined) settings.eveningEndTime = eveningEndTime || null;
+
+    // Auto-enable evening cron when eveningEndTime is being set and the toggle wasn't explicitly
+    // flipped off — this prevents the admin from having to enable two separate controls.
+    const newEveningEndTime = eveningEndTime !== undefined ? (eveningEndTime || null) : settings.eveningEndTime;
+    const shouldEnableEvening = eveningCutoffEnabled !== undefined
+      ? Boolean(eveningCutoffEnabled)
+      : (newEveningEndTime ? true : settings.eveningCutoffEnabled);
+    settings.eveningCutoffEnabled = shouldEnableEvening;
+
     settings.lastUpdatedBy = req.user.id;
     await settings.save();
 
-    // Re-drive the scheduler: prefer attendanceEndTime, fall back to cutoffTime
-    const effectiveCutoff = settings.attendanceEndTime || settings.cutoffTime;
-    if (shouldEnable && effectiveCutoff) {
-      scheduleCutoffJob(effectiveCutoff, settings.cutoffTimeZone);
-    } else if (!shouldEnable) {
+    // Re-drive morning scheduler
+    const effectiveMorningCutoff = settings.attendanceEndTime || settings.cutoffTime;
+    if (shouldEnableMorning && effectiveMorningCutoff) {
+      scheduleCutoffJob(effectiveMorningCutoff, settings.cutoffTimeZone);
+    } else if (!shouldEnableMorning) {
       cancelCutoffJob();
+    }
+
+    // Re-drive evening scheduler
+    if (shouldEnableEvening && settings.eveningEndTime) {
+      scheduleEveningCutoffJob(settings.eveningEndTime, settings.cutoffTimeZone);
+    } else if (!shouldEnableEvening) {
+      cancelEveningCutoffJob();
     }
 
     return res.json({
@@ -349,8 +396,12 @@ router.put("/attendance-window", protect, adminOnly, async (req, res) => {
       attendanceStartTime: settings.attendanceStartTime,
       attendanceEndTime: settings.attendanceEndTime,
       cutoffEnabled: settings.cutoffEnabled,
-      cutoffTimeZone: settings.cutoffTimeZone,
       scheduledCutoff: getScheduledCutoff(),
+      eveningStartTime: settings.eveningStartTime,
+      eveningEndTime: settings.eveningEndTime,
+      eveningCutoffEnabled: settings.eveningCutoffEnabled,
+      scheduledEveningCutoff: getScheduledEveningCutoff(),
+      cutoffTimeZone: settings.cutoffTimeZone,
       updatedAt: settings.updatedAt,
     });
   } catch (err) {

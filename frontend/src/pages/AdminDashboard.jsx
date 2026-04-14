@@ -108,16 +108,32 @@ export default function AdminDashboard() {
     [users]
   );
 
-  // Build today's workforce
+  // Build today's workforce — one row per user, showing both session results
   const workforce = useMemo(() => {
-    const todayRecords = new Map(
-      records
-        .filter((r) => r.date === stats?.date)
-        .map((r) => [String(r.userId), r])
-    );
+    const todayByUser = new Map();
+    records
+      .filter((r) => r.date === stats?.date)
+      .forEach((r) => {
+        const uid = String(r.userId);
+        if (!todayByUser.has(uid)) todayByUser.set(uid, {});
+        const key = r.session === "evening" ? "evening" : "morning";
+        todayByUser.get(uid)[key] = r;
+      });
+
     return users
       .map((user) => {
-        const record = todayRecords.get(String(user._id));
+        const sessions = todayByUser.get(String(user._id)) || {};
+        const morningRecord = sessions.morning || null;
+        const eveningRecord = sessions.evening || null;
+        // Derive combined status: present only if ALL configured sessions are present
+        const morningPresent = morningRecord?.status === ATTENDANCE_STATUS.PRESENT;
+        const eveningPresent = eveningRecord?.status === ATTENDANCE_STATUS.PRESENT;
+        const hasEvening = Boolean(eveningRecord);
+        const combinedStatus =
+          morningPresent && (!hasEvening || eveningPresent)
+            ? ATTENDANCE_STATUS.PRESENT
+            : morningRecord?.status || ATTENDANCE_STATUS.NOT_MARKED;
+
         return {
           id: user._id,
           name: user.name,
@@ -126,10 +142,14 @@ export default function AdminDashboard() {
           department: user.department || null,
           profileImage: user.profileImage,
           profileImageUrl: user.profileImageUrl,
-          status: record?.status || ATTENDANCE_STATUS.NOT_MARKED,
-          reason: record?.reason || null,
-          time: record?.time || null,
-          distanceMeters: record?.distanceMeters,
+          status: combinedStatus,
+          reason: morningRecord?.reason || eveningRecord?.reason || null,
+          time: morningRecord?.time || null,
+          eveningTime: eveningRecord?.time || null,
+          distanceMeters: morningRecord?.distanceMeters ?? eveningRecord?.distanceMeters,
+          morningMarked: morningPresent,
+          eveningMarked: eveningPresent,
+          hasEvening,
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -173,14 +193,14 @@ export default function AdminDashboard() {
             sub="Registered accounts"
           />
           <StatCard
-            label="Present Today"
-            value={stats?.presentToday}
-            sub="Attendance confirmed"
+            label="Work Start Present"
+            value={stats?.morningPresentToday ?? stats?.presentToday}
+            sub="Work Start session today"
           />
           <StatCard
-            label="Absent Today"
-            value={stats?.absentToday}
-            sub="Blocked submissions"
+            label="Work End Present"
+            value={stats?.eveningPresentToday ?? 0}
+            sub="Work End session today"
           />
           <StatCard
             label="Outside Location"
@@ -346,9 +366,9 @@ export default function AdminDashboard() {
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                       Face
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Last Event
-                    </th>
+                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                       Sessions
+                     </th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                       Distance
                     </th>
@@ -411,12 +431,23 @@ export default function AdminDashboard() {
                         </span>
                       </td>
 
-                      {/* Last event time */}
-                      <td className="px-4 py-3.5 text-xs text-slate-500">
-                        {employee.time
-                          ? formatTime12h(employee.time)
-                          : <span className="text-slate-300">—</span>}
-                      </td>
+                      {/* Session times */}
+                       <td className="px-4 py-3.5 text-xs text-slate-500">
+                         <div className="flex flex-col gap-0.5">
+                           {employee.time ? (
+                             <span className="text-blue-700">Start: {formatTime12h(employee.time)}</span>
+                           ) : (
+                             <span className="text-slate-300">Start: —</span>
+                           )}
+                           {employee.hasEvening && (
+                             employee.eveningTime ? (
+                               <span className="text-indigo-700">End: {formatTime12h(employee.eveningTime)}</span>
+                             ) : (
+                               <span className="text-slate-300">End: —</span>
+                             )
+                           )}
+                         </div>
+                       </td>
 
                       {/* Distance */}
                       <td className="px-4 py-3.5 text-xs text-slate-500">

@@ -8,6 +8,7 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const dotenv = require("dotenv");
 const path = require("path");
+const { csrfProtect } = require("./middleware/csrf");
 
 dotenv.config();
 
@@ -33,10 +34,17 @@ app.use(cors({
   },
   credentials: true,          // Required for HttpOnly cookies
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 }));
 app.use(express.json({ limit: "10mb" }));
 app.use(cookieParser());
+
+// ── CSRF Protection ───────────────────────────────────────────────────────────
+// Rejects any state-changing request (POST/PUT/PATCH/DELETE) that originates
+// from a browser but is missing the "X-Requested-With: XMLHttpRequest" header.
+// This header cannot be forged by cross-origin HTML forms or malicious fetch()
+// calls that fail the CORS preflight — effectively blocking CSRF attacks.
+app.use(csrfProtect);
 
 // ── Static file serving for uploaded profile images ───────────────────────────
 // Files stored in  backend/uploads/  are reachable at  GET /uploads/<filename>
