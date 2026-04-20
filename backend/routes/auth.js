@@ -70,9 +70,15 @@ function signRefreshToken(userId) {
 }
 
 // ── Profile image URL helper ──────────────────────────────────────────────────
-
-function profileImageUrl(profileImage) {
-  return profileImage ? `/${profileImage}` : null;
+// Must match the same logic as users.js sanitize() so Navbar/ProfilePage
+// see the correct absolute URL regardless of which endpoint returned the user.
+function buildProfileImageUrl(fileId) {
+  if (!fileId) return null;
+  // Guard: only build a URL for valid 24-char hex GridFS ObjectIds.
+  // Legacy values (old local paths, Cloudinary URLs) are treated as null.
+  if (!/^[a-f\d]{24}$/i.test(fileId)) return null;
+  const base = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
+  return `${base}/api/files/${fileId}`;
 }
 
 function serializeUser(user) {
@@ -84,7 +90,7 @@ function serializeUser(user) {
     hasFace: user.hasFace,
     department: user.department,
     profileImage: user.profileImage,
-    profileImageUrl: profileImageUrl(user.profileImage),
+    profileImageUrl: buildProfileImageUrl(user.profileImage),
   };
 }
 

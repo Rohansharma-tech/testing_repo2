@@ -74,6 +74,9 @@ async function generateEmployeeId(departmentName, dateOfJoin) {
  */
 function profileImageUrl(fileId) {
   if (!fileId) return null;
+  // Guard: only build a URL for valid 24-char hex GridFS ObjectIds.
+  // Silently return null for legacy local-path strings (pre-GridFS migration).
+  if (!/^[a-f\d]{24}$/i.test(fileId)) return null;
   const base = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
   return `${base}/api/files/${fileId}`;
 }
