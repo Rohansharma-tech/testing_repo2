@@ -9,7 +9,13 @@ const User = require("../models/User");
 const LeaveRequest = require("../models/LeaveRequest");
 const Appeal = require("../models/Appeal");
 const OrganizationSettings = require("../models/OrganizationSettings");
-const { protect, adminOnly } = require("../middleware/auth");
+const { protect, adminOnly, principalOnly } = require("../middleware/auth");
+
+// Helper: returns true for admin OR principal (read-only observers)
+function adminOrPrincipal(req, res, next) {
+  if (req.user.role === "admin" || req.user.role === "principal") return next();
+  return res.status(403).json({ message: "Access denied." });
+}
 const {
   ATTENDANCE_REASON,
   ATTENDANCE_STATUS,
@@ -205,6 +211,10 @@ async function getPendingRevalidationAppeal(userId, date, session = "morning") {
 // POST /api/attendance/location-check
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/location-check", async (req, res) => {
+  // Principal does not mark attendance
+  if (req.user.role === "principal") {
+    return res.status(403).json({ message: "Principal role is not required to mark attendance." });
+  }
   try {
     const settings = await OrganizationSettings.findOne({ _singleton: "global" }).lean() || {};
     const geofence = getGeofenceConfig(settings);
@@ -352,6 +362,10 @@ router.post("/location-check", async (req, res) => {
 // POST /api/attendance/mark
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/mark", async (req, res) => {
+  // Principal does not mark attendance
+  if (req.user.role === "principal") {
+    return res.status(403).json({ message: "Principal role is not required to mark attendance." });
+  }
   try {
     // Always fetch a fresh lean object — getSingleton() can return a stale Mongoose document
     const settings = await OrganizationSettings.findOne({ _singleton: "global" }).lean() || {};
@@ -689,8 +703,8 @@ router.get("/today", async (req, res) => {
   }
 });
 
-// ---- GET /api/attendance/all ----
-router.get("/all", adminOnly, async (req, res) => {
+// ---- GET /api/attendance/all — Admin + Principal (read-only) ----
+router.get("/all", adminOrPrincipal, async (req, res) => {
   try {
     const records = await Attendance.find()
       .populate({
@@ -707,8 +721,8 @@ router.get("/all", adminOnly, async (req, res) => {
   }
 });
 
-// ---- GET /api/attendance/stats ----
-router.get("/stats", adminOnly, async (req, res) => {
+// ---- GET /api/attendance/stats — Admin + Principal ----
+router.get("/stats", adminOrPrincipal, async (req, res) => {
   try {
     const dateParts = getDateTimeParts();
     const totalUsers = await User.countDocuments({ role: "user", isDeleted: { $ne: true } });
@@ -735,14 +749,183 @@ router.get("/stats", adminOnly, async (req, res) => {
   }
 });
 
-// ---- GET /api/attendance/pending-counts ----
-router.get("/pending-counts", adminOnly, async (req, res) => {
+// ---- GET /api/attendance/pending-counts — Admin + Principal ----
+router.get("/pending-counts", adminOrPrincipal, async (req, res) => {
   try {
     const leaveCount = await LeaveRequest.countDocuments({ status: "pending" });
     const appealCount = await Appeal.countDocuments({ status: "pending" });
     return res.json({ count: leaveCount + appealCount, leaves: leaveCount, appeals: appealCount });
   } catch (err) {
     return res.status(500).json({ message: "Failed to fetch pending counts." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANALYTICS ENDPOINTS — Admin + Principal (read-only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ---- GET /api/attendance/summary?date=YYYY-MM-DD ----
+// Returns today's (or given date's) high-level stats
+router.get("/summary", adminOrPrincipal, async (req, res) => {
+  try {
+    const date = req.query.date || getDateTimeParts().date;
+
+    // All non-deleted employees (role: user or hod)
+    const totalEmployees = await User.countDocuments({
+      role: { $in: ["user", "hod"] },
+      isDeleted: { $ne: true },
+    });
+
+    // Unique users who have at least one "present" record on this date
+    const presentUserIds = await Attendance.distinct("userId", {
+      date,
+      status: "present",
+    });
+
+    const absentUserIds = await Attendance.distinct("userId", {
+      date,
+      status: "absent",
+    });
+
+    // "Late" = outside the configured window but still marked present (we track via autoMarked)
+    const lateCount = await Attendance.countDocuments({
+      date,
+      status: "present",
+      autoMarked: false,
+      source: { $ne: "appeal_approval" },
+    });
+
+    const present = presentUserIds.length;
+    const absent = absentUserIds.length;
+    const onLeave = await Attendance.distinct("userId", { date, status: "leave" }).then(ids => ids.length);
+    const notMarked = Math.max(totalEmployees - present - absent - onLeave, 0);
+
+    return res.json({
+      date,
+      totalEmployees,
+      present,
+      absent,
+      onLeave,
+      notMarked,
+      attendanceRate: totalEmployees > 0 ? Math.round((present / totalEmployees) * 100) : 0,
+    });
+  } catch (err) {
+    console.error("summary error:", err);
+    return res.status(500).json({ message: "Failed to fetch summary." });
+  }
+});
+
+// ---- GET /api/attendance/trends?range=week|month|custom&from=YYYY-MM-DD&to=YYYY-MM-DD ----
+// Returns daily present/absent counts for charting
+router.get("/trends", adminOrPrincipal, async (req, res) => {
+  try {
+    const { range = "week", from, to } = req.query;
+    const today = getDateTimeParts().date;
+
+    let startDate, endDate;
+    endDate = today;
+
+    if (range === "month") {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 29);
+      startDate = d.toISOString().slice(0, 10);
+    } else if (range === "custom" && from && to) {
+      startDate = from;
+      endDate = to;
+    } else {
+      // default week
+      const d = new Date(today);
+      d.setDate(d.getDate() - 6);
+      startDate = d.toISOString().slice(0, 10);
+    }
+
+    const agg = await Attendance.aggregate([
+      { $match: { date: { $gte: startDate, $lte: endDate } } },
+      {
+        $group: {
+          _id: { date: "$date", status: "$status" },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.date": 1 } },
+    ]);
+
+    // Build a day-by-day map
+    const map = {};
+    for (const row of agg) {
+      const { date, status } = row._id;
+      if (!map[date]) map[date] = { date, present: 0, absent: 0, leave: 0 };
+      if (status === "present") map[date].present += row.count;
+      if (status === "absent") map[date].absent += row.count;
+      if (status === "leave") map[date].leave += row.count;
+    }
+
+    // Fill missing dates with zeros
+    const result = [];
+    const cur = new Date(startDate);
+    const end = new Date(endDate);
+    while (cur <= end) {
+      const d = cur.toISOString().slice(0, 10);
+      result.push(map[d] || { date: d, present: 0, absent: 0, leave: 0 });
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    return res.json(result);
+  } catch (err) {
+    console.error("trends error:", err);
+    return res.status(500).json({ message: "Failed to fetch trends." });
+  }
+});
+
+// ---- GET /api/attendance/department-stats?date=YYYY-MM-DD ----
+// Returns per-department attendance counts for a given date
+router.get("/department-stats", adminOrPrincipal, async (req, res) => {
+  try {
+    const date = req.query.date || getDateTimeParts().date;
+
+    // Get all non-deleted employees with their department
+    const employees = await User.find({
+      role: { $in: ["user", "hod"] },
+      isDeleted: { $ne: true },
+    }).select("_id department").lean();
+
+    // Build dept → total count map
+    const deptTotals = {};
+    for (const emp of employees) {
+      const dept = emp.department || "Unassigned";
+      deptTotals[dept] = (deptTotals[dept] || 0) + 1;
+    }
+
+    // Get attendance records for this date with user dept via aggregation
+    const records = await Attendance.find({ date })
+      .populate({
+        path: "userId",
+        match: { isDeleted: { $ne: true } },
+        select: "department",
+      })
+      .lean();
+
+    const deptStats = {};
+    for (const r of records) {
+      if (!r.userId) continue;
+      const dept = r.userId.department || "Unassigned";
+      if (!deptStats[dept]) deptStats[dept] = { dept, present: 0, absent: 0, leave: 0, total: deptTotals[dept] || 0 };
+      if (r.status === "present") deptStats[dept].present++;
+      if (r.status === "absent") deptStats[dept].absent++;
+      if (r.status === "leave") deptStats[dept].leave++;
+    }
+
+    // Include depts with no records
+    for (const dept of Object.keys(deptTotals)) {
+      if (!deptStats[dept]) {
+        deptStats[dept] = { dept, present: 0, absent: 0, leave: 0, total: deptTotals[dept] };
+      }
+    }
+
+    return res.json(Object.values(deptStats).sort((a, b) => a.dept.localeCompare(b.dept)));
+  } catch (err) {
+    console.error("department-stats error:", err);
+    return res.status(500).json({ message: "Failed to fetch department stats." });
   }
 });
 

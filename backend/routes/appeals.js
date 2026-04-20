@@ -23,6 +23,28 @@ router.post("/", async (req, res) => {
   }
 
   try {
+    // ── Same-day validation (org timezone) ───────────────────────────────────
+    // Appeals are only valid for the current calendar day in the org's timezone.
+    // The employee must raise the appeal on the same day they were auto-absent.
+    // Admin must act before midnight — any pending appeals are auto-rejected at
+    // 00:01 the next day by the appeal expiry cron job.
+    const OrganizationSettings = require("../models/OrganizationSettings");
+    let timeZone = process.env.APP_TIMEZONE || "Asia/Kolkata";
+    try {
+      const settings = await OrganizationSettings.getSingleton();
+      timeZone = settings.cutoffTimeZone || timeZone;
+    } catch (_) { /* fall back to env / default */ }
+
+    const { date: todayDate } = getDateTimeParts(new Date(), timeZone);
+    if (date !== todayDate) {
+      return res.status(400).json({
+        message: `Appeals can only be submitted for today (${todayDate}). The window for appealing ${date} has closed — your attendance remains absent.`,
+        code: "APPEAL_DATE_NOT_TODAY",
+        allowedDate: todayDate,
+      });
+    }
+    // ── End same-day validation ───────────────────────────────────────────────
+
     // 1. Verify that an Attendance record exists FOR THIS SESSION, is absent, and was auto-marked by cutoff.
     const attendance = await Attendance.findOne({ userId: req.user.id, date, session });
     const isCutoff =

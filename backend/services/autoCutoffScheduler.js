@@ -20,6 +20,8 @@ let _eveningTask = null;        // active cron.ScheduledTask for evening auto-ab
 let _scheduledEveningCutoff = null; // "HH:MM" string currently scheduled (evening)
 
 let _appealDeadlineTask = null; // active cron.ScheduledTask for appeal deadlines
+let _leaveExpiryTask = null;    // active cron.ScheduledTask for leave auto-rejection at midnight
+let _appealExpiryTask = null;   // active cron.ScheduledTask for appeal auto-rejection at midnight
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -378,6 +380,233 @@ async function runAppealDeadlineJob() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Job 3: Leave Expiry — Auto-reject pending leaves whose date is today
+// Runs once at 00:01 every night (just after midnight in org timezone).
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * At midnight: find all pending leave requests whose leave date equals today.
+ * These requests were never approved or rejected by the admin, so they expire
+ * automatically and the employee must attend the office normally.
+ * Attendance is NOT touched here — the auto-absent cron handles that.
+ */
+async function runLeaveExpiryJob() {
+  let timeZone = process.env.APP_TIMEZONE || "Asia/Kolkata";
+  try {
+    const settings = await OrganizationSettings.getSingleton();
+    timeZone = settings.cutoffTimeZone || timeZone;
+  } catch (_) { /* use default */ }
+
+  const { date: today } = getDateTimeParts(new Date(), timeZone);
+  console.log(`⏰ [LeaveExpiry] Running for date: ${today} (tz: ${timeZone})`);
+
+  try {
+    // Find all pending leave requests whose leave date is today
+    const expired = await LeaveRequest.find({
+      date: today,
+      status: "pending",
+    }).lean();
+
+    if (!expired.length) {
+      console.log(`⏰ [LeaveExpiry] No pending leaves to expire for ${today}.`);
+      return;
+    }
+
+    console.log(`⏰ [LeaveExpiry] Auto-rejecting ${expired.length} pending leave(s) for ${today}.`);
+
+    const ids = expired.map((l) => l._id);
+    const result = await LeaveRequest.updateMany(
+      { _id: { $in: ids } },
+      {
+        $set: {
+          status: "rejected",
+          adminResponse:
+            "Auto-rejected: The leave date arrived without admin approval. " +
+            "Please ensure you attend the office. Your attendance is subject to normal cutoff rules.",
+        },
+      }
+    );
+
+    console.log(`⏰ [LeaveExpiry] Done. ${result.modifiedCount} leave(s) auto-rejected.`);
+  } catch (err) {
+    console.error("⏰ [LeaveExpiry] Error:", err.message);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Job 4: Appeal Expiry — Auto-reject pending appeals whose date is yesterday
+// Runs once at 00:01 every night. Appeals are only valid on the day they are
+// raised; if admin has not acted by midnight, the appeal is auto-rejected and
+// the attendance record receives absent + penalty (same as a manual rejection).
+// ──────────────────────────────────────────────────────────────────────────────
+
+async function runAppealExpiryJob() {
+  let timeZone = process.env.APP_TIMEZONE || "Asia/Kolkata";
+  try {
+    const settings = await OrganizationSettings.getSingleton();
+    timeZone = settings.cutoffTimeZone || timeZone;
+  } catch (_) { /* use default */ }
+
+  const { date: today } = getDateTimeParts(new Date(), timeZone);
+
+  // "Yesterday" from the perspective of the cron running at 00:01
+  const yesterdayObj = new Date(`${today}T00:00:00`);
+  yesterdayObj.setDate(yesterdayObj.getDate() - 1);
+  const yesterday = yesterdayObj.toISOString().slice(0, 10);
+
+  console.log(`⏰ [AppealExpiry] Running for expired date: ${yesterday} (tz: ${timeZone})`);
+
+  try {
+    // Find all pending appeals whose appeal date was yesterday (day just ended)
+    const expired = await Appeal.find({
+      date: yesterday,
+      status: "pending",
+    }).lean();
+
+    if (!expired.length) {
+      console.log(`⏰ [AppealExpiry] No pending appeals to expire for ${yesterday}.`);
+      return;
+    }
+
+    console.log(`⏰ [AppealExpiry] Auto-rejecting ${expired.length} pending appeal(s) for ${yesterday}.`);
+
+    const appealIds = expired.map((a) => a._id);
+    const attendanceIds = expired.map((a) => a.attendanceId);
+
+    // 1. Reject the appeals with a system message
+    await Appeal.updateMany(
+      { _id: { $in: appealIds } },
+      {
+        $set: {
+          status: "rejected",
+          adminResponse:
+            "Auto-rejected: The appeal window for this day has closed without admin review. " +
+            "Your attendance remains absent. Please ensure you attend the office on future work days.",
+        },
+      }
+    );
+
+    // 2. Mark every appealed attendance record as absent + penalty.
+    //    Use _id lookup — these records definitively exist, no upsert needed.
+    //    $ne: "present" guard: if somehow a record was concurrently approved and
+    //    marked present, don't overwrite it.
+    await Attendance.updateMany(
+      { _id: { $in: attendanceIds }, status: { $ne: "present" } },
+      {
+        $set: {
+          status: "absent",
+          penalty: true,
+          source: "auto_cutoff",
+          adminApproved: true,
+        },
+      }
+    );
+
+    // 3. Full-day absent rule: if the expired appeal was for morning, enforce
+    //    the full-day penalty on the evening session too.
+    //    Clean two-operation approach — zero E11000 risk:
+    //      3a. updateMany  → update EXISTING evening records that are not present
+    //      3b. insertMany  → insert only for users who have NO evening record yet
+    const morningExpired = expired.filter((a) => (a.session || "morning") === "morning");
+    if (morningExpired.length > 0) {
+      const dateParts = getDateTimeParts(new Date(), timeZone);
+      const morningUserIds = morningExpired.map((a) => a.userId);
+
+      // 3a. Update existing non-present evening records (no upsert — safe, no E11000)
+      await Attendance.updateMany(
+        {
+          userId: { $in: morningUserIds },
+          date: yesterday,
+          session: "evening",
+          status: { $ne: "present" },  // never touch a record the employee already marked present
+        },
+        {
+          $set: {
+            status: "absent",
+            penalty: true,
+            source: "auto_cutoff",
+            reason: "morning_appeal_failed",
+            autoMarked: true,
+            time: dateParts.time,
+            markedAt: dateParts.now,
+            latitude: null,
+            longitude: null,
+            distanceFromGeofence: null,
+            locationAccuracy: null,
+            locationTimestamp: null,
+          },
+        }
+      );
+
+      // 3b. Insert evening records only for users who have NO evening record at all.
+      //     First find which userIds already have an evening record (any status).
+      const existingEvening = await Attendance.find(
+        { userId: { $in: morningUserIds }, date: yesterday, session: "evening" },
+        { userId: 1 }
+      ).lean();
+      const alreadyHasEvening = new Set(existingEvening.map((r) => String(r.userId)));
+
+      const toInsert = morningExpired
+        .filter((a) => !alreadyHasEvening.has(String(a.userId)))
+        .map((a) => ({
+          userId: a.userId,
+          date: yesterday,
+          session: "evening",
+          status: "absent",
+          penalty: true,
+          source: "auto_cutoff",
+          reason: "morning_appeal_failed",
+          autoMarked: true,
+          adminApproved: false,
+          time: dateParts.time,
+          markedAt: dateParts.now,
+          latitude: null,
+          longitude: null,
+          distanceFromGeofence: null,
+          locationAccuracy: null,
+          locationTimestamp: null,
+        }));
+
+      if (toInsert.length > 0) {
+        try {
+          // ordered: false → all non-conflicting docs are inserted even if one races.
+          await Attendance.insertMany(toInsert, { ordered: false });
+        } catch (insertErr) {
+          // A MongoBulkWriteError with E11000 codes means another process (e.g. the
+          // auto-absent cron) inserted one of these records in the gap between our
+          // "find existing" query and this insert — a known, safe race condition.
+          // We check that EVERY write error is E11000; any other error is re-thrown.
+          const isAllDuplicates =
+            insertErr.writeErrors?.length > 0 &&
+            insertErr.writeErrors.every((e) => e.code === 11000);
+
+          if (isAllDuplicates) {
+            console.debug("⏰ [AppealExpiry] Evening insert skipped due to race (E11000)", {
+              affectedUsers: toInsert.map((d) => d.userId),
+              date: yesterday,
+              job: "appealExpiry"
+            });
+          } else {
+            // Unexpected error — re-throw so the outer catch logs it
+            throw insertErr;
+          }
+        }
+      }
+
+      console.log(
+        `⏰ [AppealExpiry] Full-day rule: ${morningExpired.length} morning appeal(s) expired — ` +
+        `updated ${morningExpired.length - toInsert.length} existing evening record(s), ` +
+        `inserted ${toInsert.length} new evening record(s).`
+      );
+    }
+
+    console.log(`⏰ [AppealExpiry] Done. ${expired.length} appeal(s) auto-rejected.`);
+  } catch (err) {
+    console.error("⏰ [AppealExpiry] Error:", err.message);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Public API
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -471,6 +700,44 @@ function startAppealDeadlineCron() {
 }
 
 /**
+ * Start the leave expiry cron (runs once at 00:01 every day in org timezone).
+ * Auto-rejects any pending leave requests whose leave date is today.
+ * Safe to call multiple times — stops the old task first.
+ */
+function startLeaveExpiryCron(timeZone) {
+  if (_leaveExpiryTask) {
+    _leaveExpiryTask.destroy();
+    _leaveExpiryTask = null;
+  }
+
+  // Run at 00:01 every day so it fires just after the calendar day rolls over
+  _leaveExpiryTask = cron.schedule("1 0 * * *", runLeaveExpiryJob, {
+    timezone: timeZone || process.env.APP_TIMEZONE || "Asia/Kolkata",
+    scheduled: true,
+  });
+  console.log(`⏰ [LeaveExpiry] Midnight expiry cron started (tz: ${timeZone || process.env.APP_TIMEZONE || "Asia/Kolkata"}).`);
+}
+
+/**
+ * Start the appeal expiry cron (runs once at 00:01 every day in org timezone).
+ * Auto-rejects any pending appeals whose appeal date was yesterday (day just ended).
+ * Applies absent+penalty and full-day rule — same as a manual rejection.
+ * Safe to call multiple times — stops the old task first.
+ */
+function startAppealExpiryCron(timeZone) {
+  if (_appealExpiryTask) {
+    _appealExpiryTask.destroy();
+    _appealExpiryTask = null;
+  }
+
+  _appealExpiryTask = cron.schedule("1 0 * * *", runAppealExpiryJob, {
+    timezone: timeZone || process.env.APP_TIMEZONE || "Asia/Kolkata",
+    scheduled: true,
+  });
+  console.log(`⏰ [AppealExpiry] Midnight expiry cron started (tz: ${timeZone || process.env.APP_TIMEZONE || "Asia/Kolkata"}).`);
+}
+
+/**
  * Read OrganizationSettings from DB and boot both schedulers.
  * Call this once after MongoDB connects.
  */
@@ -508,6 +775,12 @@ async function initCutoffScheduler() {
 
     // Always start the appeal deadline cron regardless of cutoff config
     startAppealDeadlineCron();
+
+    // Always start the leave expiry cron (midnight auto-rejection of unapproved pending leaves)
+    startLeaveExpiryCron(settings.cutoffTimeZone);
+
+    // Always start the appeal expiry cron (midnight auto-rejection of pending same-day appeals)
+    startAppealExpiryCron(settings.cutoffTimeZone);
   } catch (err) {
     console.error("⏰ [AutoAbsent] Failed to init scheduler:", err.message);
   }
@@ -538,4 +811,6 @@ module.exports = {
   runAutoAbsentJob,              // exported for manual trigger / testing
   runAppealDeadlineJob,          // exported for manual trigger / testing
   runFullDayAbsentReconciliation, // exported for manual trigger / testing
+  runLeaveExpiryJob,             // exported for manual trigger / testing
+  runAppealExpiryJob,            // exported for manual trigger / testing
 };

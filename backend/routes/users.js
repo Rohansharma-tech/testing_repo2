@@ -5,191 +5,369 @@
 const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcryptjs");
-const path = require("path");
-const fs = require("fs");
 const multer = require("multer");
 const User = require("../models/User");
+const EmployeeCounter = require("../models/EmployeeCounter");
+const Department = require("../models/Department");
 const { protect, adminOnly } = require("../middleware/auth");
+const { uploadToGridFS, deleteFromGridFS } = require("../utils/gridfs");
+const { PROFILE_ALLOWED, multerMimeFilter, validateMagicBytes } = require("../utils/fileValidation");
+const sharp = require("sharp");
 
-// ── Multer setup ──────────────────────────────────────────────────────────────
-// Profile images land in  backend/uploads/profiles/
-// Files are renamed to  <userId>_<timestamp>.<ext>  after the user is created.
-// During creation we don't have the userId yet, so we use a temp name and
-// rename it afterwards.
-
-const UPLOAD_DIR = path.join(__dirname, "..", "uploads", "profiles");
-
-// Create the directory on first use (safe to call repeatedly)
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+// ── Image resize ──────────────────────────────────────────────────────────────
+/**
+ * Resize any incoming profile image to a 300×300 JPEG (cover crop).
+ * - Forces consistent dimensions across all avatars
+ * - Converts WEBP/PNG to JPEG for uniform storage
+ * - Reduces file size significantly before storing in MongoDB GridFS
+ *
+ * @param {Buffer} inputBuffer — raw file buffer from multer
+ * @returns {Promise<Buffer>}   — resized JPEG buffer
+ */
+async function resizeProfileImage(inputBuffer) {
+  return sharp(inputBuffer)
+    .resize(300, 300, { fit: "cover", position: "centre" })
+    .jpeg({ quality: 85, progressive: true })
+    .toBuffer();
 }
 
-const storage = multer.diskStorage({
-  destination(_req, _file, cb) {
-    cb(null, UPLOAD_DIR);
-  },
-  filename(_req, file, cb) {
-    const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
-    // Temp name — will be renamed once we have the new user's _id
-    cb(null, `tmp_${Date.now()}${ext}`);
-  },
-});
+// ── Multer: memory storage + MIME filter ─────────────────────────────────────
+// Files are buffered in memory for magic-byte validation, then streamed to GridFS.
+// Max size: 2 MB (as per security requirements).
+const profileUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: multerMimeFilter(PROFILE_ALLOWED),
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
+}).single("profileImage");
 
-function fileFilter(_req, file, cb) {
-  const allowed = ["image/jpeg", "image/png", "image/webp", "image/gif"];
-  if (allowed.includes(file.mimetype)) {
-    cb(null, true);
+function runProfileUpload(req, res) {
+  return new Promise((resolve, reject) => {
+    profileUpload(req, res, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+// ── Atomic Employee ID Generation ─────────────────────────────────────────────
+async function generateEmployeeId(departmentName, dateOfJoin) {
+  let deptCode;
+  if (!departmentName) {
+    deptCode = "PRIN";
   } else {
-    cb(new Error("Only JPEG, PNG, WEBP, and GIF images are accepted."), false);
+    const dept = await Department.findOne({ name: departmentName });
+    deptCode = dept?.code || departmentName.replace(/\s+/g, "").slice(0, 3).toUpperCase() || "GEN";
   }
+  const year = new Date(dateOfJoin).getFullYear().toString().slice(-2);
+  const key = `${deptCode}-${year}`;
+  const counter = await EmployeeCounter.findOneAndUpdate(
+    { key },
+    { $inc: { seq: 1 } },
+    { upsert: true, new: true }
+  );
+  const seq = String(counter.seq).padStart(3, "0");
+  return `${deptCode}${year}${seq}`;
 }
-
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
-});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Return the public URL path for a profileImage DB value, or null. */
-function avatarUrl(profileImage) {
-  if (!profileImage) return null;
-  // profileImage is stored as "uploads/profiles/<filename>"
-  return `/${profileImage}`;
+/**
+ * Build the profile image URL from the stored GridFS fileId.
+ * Returns an absolute URL so any device can load the image.
+ */
+function profileImageUrl(fileId) {
+  if (!fileId) return null;
+  const base = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
+  return `${base}/api/files/${fileId}`;
 }
 
-/** Strip sensitive fields before sending a user object to the client. */
 function sanitize(user) {
   const obj = user.toObject ? user.toObject() : { ...user };
   delete obj.password;
   delete obj.faceDescriptor;
-  obj.profileImageUrl = avatarUrl(obj.profileImage);
+  obj.profileImageUrl = profileImageUrl(obj.profileImage);
   return obj;
 }
 
-// ── GET /api/users ────────────────────────────────────────────────────────────
-router.get("/", protect, adminOnly, async (req, res) => {
+function stripClientForbiddenFields(body) {
+  delete body.employeeId;
+  delete body.hasFace;
+  delete body.faceDescriptor;
+  delete body.isDeleted;
+  delete body.deletedAt;
+}
+
+// ── GET /api/users ─────────────────────────────────────────────────────────────
+router.get("/", protect, async (req, res) => {
+  const role = req.user.role;
+  if (role !== "admin" && role !== "principal") {
+    return res.status(403).json({ message: "Access denied." });
+  }
   try {
     const users = await User.find({ isDeleted: { $ne: true } })
       .select("-password -faceDescriptor")
       .sort({ createdAt: -1 });
     const result = users.map((u) => {
       const obj = u.toObject();
-      obj.profileImageUrl = avatarUrl(obj.profileImage);
+      obj.profileImageUrl = profileImageUrl(obj.profileImage);
       return obj;
     });
     return res.json(result);
   } catch (err) {
+    console.error("Fetch users error:", err);
     return res.status(500).json({ message: "Failed to fetch users." });
   }
 });
 
-// ── GET /api/users/departments ────────────────────────────────────────────────
-router.get("/departments", protect, adminOnly, async (req, res) => {
+// ── GET /api/users/departments ─────────────────────────────────────────────────
+router.get("/departments", protect, async (req, res) => {
   try {
-    const departments = await User.distinct("department", {
-      department: { $ne: null },
-      isDeleted: { $ne: true },
-    });
-    return res.json(departments.sort());
-  } catch (err) {
+    const departments = await Department.find().sort({ name: 1 }).select("name code");
+    return res.json(departments);
+  } catch {
     return res.status(500).json({ message: "Failed to fetch departments." });
   }
 });
 
-// ── GET /api/users/:id/avatar ─────────────────────────────────────────────────
-// Redirects to the static file URL; useful if callers only have the user id.
+// ── GET /api/users/:id ──────────────────────────────────────────────────────────
+router.get("/:id", protect, async (req, res) => {
+  const isSelf = req.params.id === req.user.id;
+  const isAdmin = req.user.role === "admin";
+  const isPrincipal = req.user.role === "principal";
+  if (!isSelf && !isAdmin && !isPrincipal) {
+    return res.status(403).json({ message: "Access denied." });
+  }
+  try {
+    const user = await User.findById(req.params.id).select("-password -faceDescriptor");
+    if (!user) return res.status(404).json({ message: "User not found." });
+    const obj = user.toObject();
+    obj.profileImageUrl = profileImageUrl(obj.profileImage);
+    return res.json(obj);
+  } catch (err) {
+    console.error("Fetch user error:", err);
+    return res.status(500).json({ message: "Failed to fetch user." });
+  }
+});
+
+// ── GET /api/users/:id/avatar — Redirect to GridFS file URL ──────────────────
 router.get("/:id/avatar", protect, async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("profileImage");
-    if (!user) return res.status(404).json({ message: "User not found." });
-    if (!user.profileImage) return res.status(404).json({ message: "No avatar set." });
-    return res.redirect(`/${user.profileImage}`);
-  } catch (err) {
+    if (!user || !user.profileImage) return res.status(404).json({ message: "No avatar set." });
+    return res.redirect(`/api/files/${user.profileImage}`);
+  } catch {
     return res.status(500).json({ message: "Failed to fetch avatar." });
   }
 });
 
-// ── POST /api/users ───────────────────────────────────────────────────────────
-// Accepts multipart/form-data (for optional photo) OR JSON (no photo).
-// multer's .single() is added as optional middleware; if Content-Type is JSON
-// multer is skipped via the conditional wrapper below.
-router.post(
-  "/",
-  protect,
-  adminOnly,
-  // Accept an optional file field named "profileImage"
-  upload.single("profileImage"),
-  async (req, res) => {
-    const { name, email, password, role, department } = req.body;
+// ── POST /api/users ─────────────────────────────────────────────────────────────
+router.post("/", protect, adminOnly, async (req, res) => {
+  // Step 1: parse multipart (memory storage)
+  try { await runProfileUpload(req, res); }
+  catch (err) { return res.status(400).json({ message: err.message }); }
 
-    if (!name || !email || !password) {
-      // Clean up any uploaded temp file
-      if (req.file) fs.unlink(req.file.path, () => {});
-      return res.status(400).json({ message: "Name, email, and password are required." });
-    }
+  stripClientForbiddenFields(req.body);
 
-    if (password.length < 6) {
-      if (req.file) fs.unlink(req.file.path, () => {});
-      return res.status(400).json({ message: "Password must be at least 6 characters." });
-    }
+  const {
+    firstName, lastName, email, password, role, department,
+    newDepartmentName, newDepartmentCode, dateOfJoin, dateOfBirth,
+    nationality, gender, personalEmail, mobileNo,
+    designation, location, employeeType,
+  } = req.body;
 
-    try {
-      const existing = await User.findOne({ email: email.toLowerCase().trim() });
+  if (!firstName || !email || !password)
+    return res.status(400).json({ message: "First name, email, and password are required." });
+  if (!dateOfJoin)
+    return res.status(400).json({ message: "Date of join is required." });
+  if (password.length < 6)
+    return res.status(400).json({ message: "Password must be at least 6 characters." });
+  if (mobileNo && !/^\d{10}$/.test(mobileNo.trim()))
+    return res.status(400).json({ message: "Mobile number must be exactly 10 digits." });
+
+  // Step 2: magic-byte validation
+  if (req.file) {
+    const { ok, detected } = await validateMagicBytes(req.file.buffer, req.file.mimetype, PROFILE_ALLOWED);
+    if (!ok)
+      return res.status(415).json({ message: `File content does not match a supported image type (detected: ${detected ?? "unknown"}).` });
+  }
+
+  const resolvedRole = ["admin", "user", "hod", "principal"].includes(role) ? role : "user";
+
+  try {
+    let resolvedDeptName = null;
+
+    if (resolvedRole === "principal") {
+      resolvedDeptName = null;
+    } else if (resolvedRole === "hod" && newDepartmentName) {
+      const cleanName = newDepartmentName.trim();
+      const cleanCode = (newDepartmentCode || "").trim().toUpperCase();
+      if (!cleanCode || !/^[A-Z]{2,6}$/.test(cleanCode))
+        return res.status(400).json({ message: "Department code must be 2–6 uppercase letters." });
+      const existing = await Department.findOne({ $or: [{ name: cleanName }, { code: cleanCode }] });
       if (existing) {
-        if (req.file) fs.unlink(req.file.path, () => {});
-        return res.status(409).json({ message: "A user with that email already exists." });
+        const field = existing.name === cleanName ? "name" : "code";
+        return res.status(409).json({ message: `A department with that ${field} already exists.` });
       }
-
-      const hashedPassword = await bcrypt.hash(password, 10);
-
-      const newUser = await User.create({
-        name,
-        email,
-        password: hashedPassword,
-        role: role || "user",
-        department: department || null,
-        profileImage: null, // set after rename below
-      });
-
-      // If a photo was uploaded, rename from tmp_ to <userId>_<timestamp>.<ext>
-      if (req.file) {
-        const ext = path.extname(req.file.filename);
-        const finalName = `${newUser._id}_${Date.now()}${ext}`;
-        const finalPath = path.join(UPLOAD_DIR, finalName);
-        fs.renameSync(req.file.path, finalPath);
-
-        // Store relative path so it works regardless of server root
-        const relPath = `uploads/profiles/${finalName}`;
-        newUser.profileImage = relPath;
-        await newUser.save();
-      }
-
-      return res.status(201).json(sanitize(newUser));
-    } catch (err) {
-      if (req.file) fs.unlink(req.file.path, () => {});
-      console.error("Create user error:", err);
-      return res.status(500).json({ message: "Failed to create user." });
+      const newDept = await Department.create({ name: cleanName, code: cleanCode });
+      resolvedDeptName = newDept.name;
+    } else if (department) {
+      const existingDept = await Department.findOne({ name: department.trim() });
+      if (!existingDept)
+        return res.status(400).json({ message: `Department "${department}" does not exist.`, code: "DEPARTMENT_NOT_FOUND" });
+      resolvedDeptName = existingDept.name;
+    } else {
+      return res.status(400).json({ message: "Department is required." });
     }
-  },
-);
 
-// ── DELETE /api/users/:id ─────────────────────────────────────────────────────
-// Soft-delete: sets isDeleted=true and records deletedAt timestamp.
-// The User document is retained so that existing Attendance records can still
-// be populated with name/email. The profile image is kept on disk for the same
-// reason (attendance table may display the avatar for historical entries).
+    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existingUser)
+      return res.status(409).json({ message: "A user with that email already exists." });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const empId = await generateEmployeeId(resolvedDeptName, dateOfJoin);
+
+    const newUser = await User.create({
+      employeeId:    empId,
+      firstName:     firstName.trim(),
+      lastName:      (lastName || "").trim(),
+      email:         email.toLowerCase().trim(),
+      password:      hashedPassword,
+      role:          resolvedRole,
+      department:    resolvedDeptName,
+      dateOfJoin:    dateOfJoin ? new Date(dateOfJoin) : null,
+      dateOfBirth:   dateOfBirth ? new Date(dateOfBirth) : null,
+      nationality:   nationality || "",
+      gender:        gender || "",
+      personalEmail: (personalEmail || "").toLowerCase().trim(),
+      mobileNo:      (mobileNo || "").trim(),
+      designation:   (designation || "").trim(),
+      location:      (location || "").trim(),
+      employeeType:  employeeType || "",
+      profileImage:  null,
+    });
+
+    if (resolvedRole === "hod" && newDepartmentName) {
+      await Department.findOneAndUpdate({ name: resolvedDeptName }, { createdBy: newUser._id });
+    }
+
+    // Step 3: Resize → Upload to GridFS
+    if (req.file) {
+      const resized = await resizeProfileImage(req.file.buffer);
+      const fileId = await uploadToGridFS(
+        resized,
+        `profile_${newUser._id}.jpg`,
+        "image/jpeg",
+        { purpose: "profile", userId: String(newUser._id) }
+      );
+      newUser.profileImage = String(fileId);
+      await newUser.save();
+    }
+
+    return res.status(201).json(sanitize(newUser));
+  } catch (err) {
+    console.error("Create user error:", err);
+    if (err.code === 11000)
+      return res.status(409).json({ message: "A user with that email or Employee ID already exists." });
+    return res.status(500).json({ message: "Failed to create user." });
+  }
+});
+
+// ── PUT /api/users/:id ──────────────────────────────────────────────────────────
+// Admin: can edit any user (all fields)
+// Self: can edit own profile (restricted fields only — no role/department changes)
+router.put("/:id", protect, async (req, res) => {
+  const isSelf  = req.params.id === req.user.id;
+  const isAdmin = req.user.role === "admin";
+  if (!isSelf && !isAdmin)
+    return res.status(403).json({ message: "Access denied. You can only edit your own profile." });
+
+  // Step 1: parse multipart
+  try { await runProfileUpload(req, res); }
+  catch (err) { return res.status(400).json({ message: err.message }); }
+
+  stripClientForbiddenFields(req.body);
+
+  const {
+    firstName, lastName, email, password, role, department,
+    dateOfJoin, dateOfBirth, nationality, gender, personalEmail,
+    mobileNo, designation, location, employeeType,
+  } = req.body;
+
+  if (mobileNo && !/^\d{10}$/.test(mobileNo.trim()))
+    return res.status(400).json({ message: "Mobile number must be exactly 10 digits." });
+
+  // Step 2: magic-byte validation
+  if (req.file) {
+    const { ok, detected } = await validateMagicBytes(req.file.buffer, req.file.mimetype, PROFILE_ALLOWED);
+    if (!ok)
+      return res.status(415).json({ message: `File content does not match a supported image type (detected: ${detected ?? "unknown"}).` });
+  }
+
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found." });
+    if (user.isDeleted) return res.status(400).json({ message: "Cannot edit a deactivated user." });
+    if (user.role === "admin" && user._id.toString() !== req.user.id)
+      return res.status(403).json({ message: "Admin accounts cannot be edited by other admins." });
+
+    if (firstName    !== undefined) user.firstName    = firstName.trim();
+    if (lastName     !== undefined) user.lastName     = (lastName || "").trim();
+    if (designation  !== undefined) user.designation  = (designation || "").trim();
+    if (location     !== undefined) user.location     = (location || "").trim();
+    if (mobileNo     !== undefined) user.mobileNo     = (mobileNo || "").trim();
+    if (nationality  !== undefined) user.nationality  = (nationality || "").trim();
+    if (gender       !== undefined) user.gender       = gender || "";
+    if (personalEmail !== undefined) user.personalEmail = (personalEmail || "").toLowerCase().trim();
+    if (employeeType !== undefined) user.employeeType = employeeType || "";
+    if (dateOfBirth  !== undefined) user.dateOfBirth  = dateOfBirth ? new Date(dateOfBirth) : null;
+    if (dateOfJoin   !== undefined) user.dateOfJoin   = dateOfJoin  ? new Date(dateOfJoin)  : null;
+
+    // Admin-only fields — ignored silently for self-edits
+    if (isAdmin) {
+      if (email && email.toLowerCase().trim() !== user.email) {
+        const conflict = await User.findOne({ email: email.toLowerCase().trim() });
+        if (conflict && conflict._id.toString() !== req.params.id)
+          return res.status(409).json({ message: "A user with that email already exists." });
+        user.email = email.toLowerCase().trim();
+      }
+      if (department !== undefined) user.department = department || null;
+      if (role && ["user", "admin", "hod", "principal"].includes(role)) user.role = role;
+    }
+
+    if (password && password.trim().length > 0) {
+      if (password.trim().length < 6)
+        return res.status(400).json({ message: "Password must be at least 6 characters." });
+      user.password = await bcrypt.hash(password.trim(), 10);
+    }
+
+    // Step 3: Replace profile image in GridFS (resize before storing)
+    if (req.file) {
+      await deleteFromGridFS(user.profileImage);
+
+      const resized = await resizeProfileImage(req.file.buffer);
+      const fileId = await uploadToGridFS(
+        resized,
+        `profile_${user._id}.jpg`,
+        "image/jpeg",
+        { purpose: "profile", userId: String(user._id) }
+      );
+      user.profileImage = String(fileId);
+    }
+
+    await user.save();
+    return res.json(sanitize(user));
+  } catch (err) {
+    console.error("Edit user error:", err);
+    return res.status(500).json({ message: "Failed to update user." });
+  }
+});
+
+// ── DELETE /api/users/:id ──────────────────────────────────────────────────────
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found." });
-    if (user.role === "admin") {
+    if (user.role === "admin")
       return res.status(403).json({ message: "Admin accounts cannot be deleted." });
-    }
-    if (user.isDeleted) {
+    if (user.isDeleted)
       return res.status(409).json({ message: "User is already deactivated." });
-    }
 
     user.isDeleted = true;
     user.deletedAt = new Date();

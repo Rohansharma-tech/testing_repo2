@@ -1,80 +1,125 @@
-// src/context/AuthContext.jsx — Global Authentication State
-// JWT lives in an HttpOnly cookie — never touched by JS.
-// User profile is kept only in React state (memory), not localStorage.
+// src/context/AuthContext.jsx — Global Authentication State (v2)
+//
+// Token strategy (matched to backend):
+//   - /auth/session → checks 30-min access token cookie, returns user or { user: null, expired: true }
+//   - If expired: true → silently call /auth/refresh to get a new access token
+//   - axios interceptor handles 401 auto-refresh for all subsequent API calls
+//   - logout-all endpoint revokes every session for the user
 
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import axios from "axios";
 import api from "../api/axios";
 
 const AuthContext = createContext(null);
 
-/** Normalize the raw API response into the shape the app expects. */
+const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+
+// Standalone axios instance for session/refresh — bypasses the 401 interceptor
+// to prevent circular redirect loops during initial page load
+const silentApi = axios.create({
+  baseURL: BASE_URL,
+  headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+  withCredentials: true,
+});
+
+/** Normalize raw API user object → consistent app shape */
 function normalizeUser(data) {
+  if (!data) return null;
   return {
-    id: data.id || data._id,
-    name: data.name,
-    email: data.email,
-    role: data.role,
-    hasFace: data.hasFace,
-    department: data.department ?? null,
-    profileImage: data.profileImage ?? null,       // relative DB path or null
-    profileImageUrl: data.profileImageUrl ?? null, // absolute URL returned by API
+    id:              data.id || data._id,
+    name:            data.name,
+    email:           data.email,
+    role:            data.role,
+    hasFace:         data.hasFace,
+    department:      data.department ?? null,
+    profileImage:    data.profileImage ?? null,
+    profileImageUrl: data.profileImageUrl ?? null,
   };
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  const [user, setUser]     = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount: hit /auth/session — always returns 200 with either the user object
-  // or { user: null }. This avoids the red 401 console error that /auth/me
-  // produces when the user isn't logged in yet.
+  // ── Session restore on page load ─────────────────────────────────────────────
   useEffect(() => {
-    let isMounted = true;
+    let mounted = true;
 
     async function restoreSession() {
       try {
-        const res = await api.get("/auth/session");
-        if (isMounted) {
-          setUser(res.data.user ? normalizeUser(res.data.user) : null);
+        // 1. Try to load from existing access token
+        const res = await silentApi.get("/auth/session");
+
+        if (!mounted) return;
+
+        if (res.data.user) {
+          setUser(normalizeUser(res.data.user));
+          return;
         }
+
+        // 2. Access token expired — try refresh silently
+        if (res.data.expired) {
+          try {
+            const refreshRes = await silentApi.post("/auth/refresh");
+            if (mounted && refreshRes.data.user) {
+              setUser(normalizeUser(refreshRes.data.user));
+              return;
+            }
+          } catch {
+            // Refresh failed — no session
+          }
+        }
+
+        if (mounted) setUser(null);
       } catch {
-        // Unexpected network error — treat as no session
-        if (isMounted) setUser(null);
+        // Network error or unexpected — treat as no session
+        if (mounted) setUser(null);
       } finally {
-        if (isMounted) setLoading(false);
+        if (mounted) setLoading(false);
       }
     }
 
     restoreSession();
-    return () => { isMounted = false; };
+    return () => { mounted = false; };
   }, []);
 
-  const login = async (email, password) => {
-    // Server sets the HttpOnly cookie; response body contains only user data
+  // ── Login ─────────────────────────────────────────────────────────────────────
+  const login = useCallback(async (email, password) => {
     const res = await api.post("/auth/login", { email, password });
     const normalized = normalizeUser(res.data.user);
     setUser(normalized);
     return normalized;
-  };
+  }, []);
 
-  const logout = async () => {
+  // ── Logout (current session only) ────────────────────────────────────────────
+  const logout = useCallback(async () => {
     try {
-      // Tell the server to clear the HttpOnly cookie
       await api.post("/auth/logout");
-    } catch {
-      // Even if the request fails, clear local state
-    } finally {
+    } catch { /* ignore — still clear */ }
+    finally {
       setUser(null);
       window.location.href = "/login";
     }
-  };
+  }, []);
 
-  const updateUser = (updates) => {
-    setUser((current) => ({ ...current, ...updates }));
-  };
+  // ── Logout all sessions (nuclear) ────────────────────────────────────────────
+  const logoutAll = useCallback(async () => {
+    try {
+      await api.post("/auth/logout-all");
+    } catch { /* ignore */ }
+    finally {
+      setUser(null);
+      window.location.href = "/login";
+    }
+  }, []);
+
+  // ── Update local user state (e.g. after profile edit) ────────────────────────
+  const updateUser = useCallback((updates) => {
+    setUser((current) => current ? { ...current, ...updates } : null);
+  }, []);
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, updateUser, loading }}>
+    <AuthContext.Provider value={{ user, login, logout, logoutAll, updateUser, loading }}>
       {children}
     </AuthContext.Provider>
   );

@@ -16,6 +16,12 @@ function formatFriendlyDate(value) {
   });
 }
 
+/** Returns today's date as YYYY-MM-DD in the browser's local timezone. */
+function getTodayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 // Group flat records into { date → { morning, evening } }
 function groupByDate(records) {
   const map = new Map();
@@ -35,7 +41,8 @@ function UserAvatar({ user }) {
   const initials = user?.name
     ? user.name.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase()
     : "?";
-  const src = user?.profileImageUrl || (user?.profileImage ? `/${user.profileImage}` : null);
+// Resolve Cloudinary URL
+  const src = user?.profileImageUrl || user?.profileImage || null;
   const [broken, setBroken] = useState(false);
   if (src && !broken) {
     return (
@@ -92,39 +99,54 @@ function AppealModal({ date, session = "morning", onConfirm, onClose }) {
             </svg>
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
-          <p className="text-sm text-slate-500">
-            Appealing auto-absent mark for{" "}
-            <strong className="text-slate-700">{formatFriendlyDate(date)}</strong>
-            {" "}—{" "}
-            <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold ${
-              session === "evening"
-                ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
-                : "bg-blue-50 text-blue-700 border border-blue-200"
-            }`}>{sessionLabel}</span>
-          </p>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">Reason for appeal</label>
-            <textarea
-              className="input-field resize-none"
-              rows={4}
-              placeholder="Explain why you were unable to mark attendance..."
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              required
-              autoFocus
-            />
+
+        {/* Past-date defensive guard — backend will also reject, but give clear UI feedback */}
+        {date !== getTodayLocal() ? (
+          <div className="px-6 py-6 space-y-4">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
+              <p className="text-sm font-semibold text-amber-800">Appeal window closed</p>
+              <p className="mt-1 text-xs text-amber-700">
+                Appeals can only be submitted on the same day as the absence.
+                The window for <strong>{formatFriendlyDate(date)}</strong> has closed.
+              </p>
+            </div>
+            <button onClick={onClose} className="btn-secondary w-full">Close</button>
           </div>
-          {error && (
-            <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-4 py-2">{error}</p>
-          )}
-          <div className="flex items-center gap-3 pt-1">
-            <button type="submit" disabled={submitting} className="btn-primary disabled:opacity-50">
-              {submitting ? "Submitting…" : "Submit Appeal"}
-            </button>
-            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          </div>
-        </form>
+        ) : (
+          <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+            <p className="text-sm text-slate-500">
+              Appealing auto-absent mark for{" "}
+              <strong className="text-slate-700">{formatFriendlyDate(date)}</strong>
+              {" "}—{" "}
+              <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold ${
+                session === "evening"
+                  ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                  : "bg-blue-50 text-blue-700 border border-blue-200"
+              }`}>{sessionLabel}</span>
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Reason for appeal</label>
+              <textarea
+                className="input-field resize-none"
+                rows={4}
+                placeholder="Explain why you were unable to mark attendance..."
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                required
+                autoFocus
+              />
+            </div>
+            {error && (
+              <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-4 py-2">{error}</p>
+            )}
+            <div className="flex items-center gap-3 pt-1">
+              <button type="submit" disabled={submitting} className="btn-primary disabled:opacity-50">
+                {submitting ? "Submitting…" : "Submit Appeal"}
+              </button>
+              <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -193,6 +215,21 @@ function AppealBadge({ record, appeal, onAppeal }) {
     (record?.source === "cutoff" || record?.source === "auto_cutoff" || record?.reason === "auto_absent");
 
   if (!isAutoCutoff && !appeal) return <span className="text-xs text-slate-300">—</span>;
+
+  const today = getTodayLocal();
+  const isToday = record?.date === today;
+
+  // Past-date: show a locked "Closed" badge instead of the Appeal button
+  if (isAutoCutoff && !appeal && !isToday) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-400">
+        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+        Closed
+      </span>
+    );
+  }
 
   return (
     <button

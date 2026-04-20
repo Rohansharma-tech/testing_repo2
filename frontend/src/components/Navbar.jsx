@@ -12,12 +12,15 @@ function isLinkActive(pathname, href) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-/** Resolve the full image URL from the value stored in context. */
+/** Resolve the full image URL from the value stored in context.
+ * profileImageUrl is an absolute HTTPS URL built from the GridFS fileId.
+ * profileImage is the raw GridFS fileId stored in the User document.
+ */
 function resolveAvatarUrl(user) {
   if (!user) return null;
-  if (user.profileImageUrl) return user.profileImageUrl;
-  if (user.profileImage) return `/${user.profileImage}`;
-  return null;
+  // profileImageUrl is pre-built by the backend: https://backend/api/files/<fileId>
+  // Fall back to building it from profileImage if profileImageUrl is not set
+  return user.profileImageUrl || user.profileImage || null;
 }
 
 // ── Avatar component ──────────────────────────────────────────────────────────
@@ -31,14 +34,13 @@ function Avatar({ user, size = "md" }) {
   };
   const cls = `${sizeClasses[size]} flex-shrink-0 rounded-full object-cover`;
 
-  const initials = user?.name
-    ? user.name
-        .split(" ")
-        .slice(0, 2)
-        .map((w) => w[0])
-        .join("")
-        .toUpperCase()
-    : "?";
+  const initials = (() => {
+    const n = user?.name || `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim();
+    return n
+      ? n.split(" ").slice(0, 2).map(w => w[0]).join("").toUpperCase()
+      : "?";
+  })();
+
 
   const src = resolveAvatarUrl(user);
   const [broken, setBroken] = useState(false);
@@ -137,17 +139,48 @@ export default function Navbar() {
     { to: "/register-face",   label: "Face Registration",  mobileLabel: "Face",     shortLabel: "FR" },
   ];
 
+  const hodLinks = [
+    { to: "/dashboard",       label: "Overview",           mobileLabel: "Home",     shortLabel: "OV" },
+    { to: "/mark-attendance", label: "Mark Attendance",    mobileLabel: "Mark",     shortLabel: "AT" },
+    { to: "/my-attendance",   label: "Attendance History", mobileLabel: "History",  shortLabel: "HS" },
+    { to: "/leaves",          label: "My Leaves",          mobileLabel: "Leaves",   shortLabel: "LV" },
+    { to: "/hod/leaves",      label: "Leave Review",       mobileLabel: "Review",   shortLabel: "LR" },
+    { to: "/register-face",   label: "Face Registration",  mobileLabel: "Face",     shortLabel: "FR" },
+  ];
+
+  const principalLinks = [
+    { to: "/principal/dashboard", label: "Analytics",         mobileLabel: "Stats",   shortLabel: "AN" },
+    { to: "/principal/leaves",    label: "Final Approvals",   mobileLabel: "Approve", shortLabel: "FA" },
+    { to: "/admin/users",         label: "Staff Directory",   mobileLabel: "Staff",   shortLabel: "SF" },
+    { to: "/admin/attendance",    label: "Attendance Records",mobileLabel: "Records", shortLabel: "AR" },
+  ];
+
+
+
   const adminLinks = [
     { to: "/admin",              label: "Dashboard",  mobileLabel: "Home",     shortLabel: "DB" },
     { to: "/admin/users",        label: "Users",      mobileLabel: "Users",    shortLabel: "US" },
     { to: "/admin/attendance",   label: "Attendance", mobileLabel: "Records",  shortLabel: "AR" },
     { to: "/admin/settings",     label: "Settings",   mobileLabel: "Settings", shortLabel: "ST" },
     { to: "/admin/location",     label: "Location",   mobileLabel: "Location", shortLabel: "LC" },
-    { to: "/admin/requests",     label: "Requests & Appeals", mobileLabel: "Requests", shortLabel: "RQ", badge: pendingCount > 0 ? pendingCount : null },
+    { to: "/admin/requests",     label: "Appeals",            mobileLabel: "Appeals",  shortLabel: "AP", badge: pendingCount > 0 ? pendingCount : null },
   ];
 
-  const links = user?.role === "admin" ? adminLinks : userLinks;
-  const roleLabel = user?.role === "admin" ? "Administrator" : "Employee";
+  const ROLE_LINKS = {
+    admin:     adminLinks,
+    hod:       hodLinks,
+    principal: principalLinks,
+    user:      userLinks,
+  };
+  const ROLE_LABELS = {
+    admin:     "Administrator",
+    hod:       "Head of Department",
+    principal: "Principal",
+    user:      "Employee",
+  };
+
+  const links = ROLE_LINKS[user?.role] ?? userLinks;
+  const roleLabel = ROLE_LABELS[user?.role] ?? "Employee";
 
   return (
     <>
@@ -172,7 +205,7 @@ export default function Navbar() {
             <div className="flex items-center gap-2.5">
               <Avatar user={user} size="md" />
               <div className="hidden text-right sm:block">
-                <p className="text-sm font-semibold text-slate-900">{user?.name}</p>
+                <p className="text-sm font-semibold text-slate-900">{user?.name || `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim() || user?.email}</p>
                 <p className="text-xs text-slate-500">{roleLabel}</p>
               </div>
             </div>
@@ -197,7 +230,7 @@ export default function Navbar() {
           <div className="mt-3 flex items-center gap-3">
             <Avatar user={user} size="sm" />
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-slate-900">{user?.name}</p>
+              <p className="truncate text-sm font-semibold text-slate-900">{user?.name || `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim()}</p>
               <p className="truncate text-xs text-slate-500">{user?.email}</p>
             </div>
           </div>

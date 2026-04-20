@@ -22,8 +22,5 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Uploaded files (stored locally — use cloud storage in production)
-backend/uploads/profiles/*.jpg
-backend/uploads/profiles/*.jpeg
-backend/uploads/profiles/*.png
-backend/uploads/profiles/*.webp
+# Uploaded files — now stored in MongoDB GridFS, never on local disk
+backend/uploads/

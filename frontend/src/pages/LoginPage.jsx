@@ -19,11 +19,27 @@ export default function LoginPage() {
       const user = await login(email, password);
       navigate(user.role === "admin" ? "/admin" : "/dashboard", { replace: true });
     } catch (err) {
-      setError(err.response?.data?.message || "Login failed. Check your credentials and try again.");
+      const status = err.response?.status;
+      const serverMsg = err.response?.data?.message;
+
+      if (!err.response) {
+        // Network error or CORS issue — server unreachable
+        setError("Cannot reach the server. Please check your connection or try again shortly.");
+      } else if (status === 429) {
+        setError(serverMsg || "Too many login attempts. Please wait 15 minutes and try again.");
+      } else if (status === 401 || status === 400) {
+        // Wrong credentials — show the backend message directly
+        setError(serverMsg || "Invalid email or password.");
+      } else if (status === 403) {
+        setError(serverMsg || "Your account has been deactivated. Contact your administrator.");
+      } else {
+        setError(serverMsg || "Login failed. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="min-h-screen bg-slate-100 px-4 py-6 sm:px-6 lg:px-8">

@@ -1,8 +1,19 @@
 // =============================================
-// models/LeaveRequest.js — Leave Request Database Schema
+// models/LeaveRequest.js — Leave Request Database Schema (v2 - Multi-level Approval)
 // =============================================
 
 const mongoose = require("mongoose");
+
+// Sub-schema for a single approval stage (HOD or Principal)
+const approvalSchema = new mongoose.Schema(
+  {
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    action: { type: String, enum: ["approved", "rejected", null], default: null },
+    remarks: { type: String, trim: true, default: "" },
+    at: { type: Date, default: null },
+  },
+  { _id: false }
+);
 
 const leaveRequestSchema = new mongoose.Schema(
   {
@@ -11,7 +22,13 @@ const leaveRequestSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    // Date in YYYY-MM-DD format
+    // Snapshot of employee's department at time of submission.
+    // Used for HOD department-match authorization — never trust client-sent value.
+    department: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     date: {
       type: String,
       required: true,
@@ -21,39 +38,51 @@ const leaveRequestSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-    // "full_day" = no attendance required for the day.
-    // "half_day" = one session is waived; user must still attend the other.
     type: {
       type: String,
       enum: ["full_day", "half_day"],
       default: "full_day",
     },
-    // Which session is covered by the half-day leave.
-    // "morning" = Work Start is leave; user must mark Work End.
-    // "evening" = Work End is leave; user must mark Work Start.
-    // null for full_day leaves.
     halfDaySession: {
       type: String,
       enum: ["morning", "evening", null],
       default: null,
     },
+    // ── Multi-level status ──────────────────────────────────────────────────────
+    // Employee flow:  pending_hod → approved_hod → approved (final, Principal approves)
+    //                             → rejected_hod            (final, HOD rejects)
+    //                                           → rejected   (final, Principal rejects)
+    // HOD flow:       pending_principal → approved (final, Principal approves)
+    //                                  → rejected  (final, Principal rejects)
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected"],
-      default: "pending",
+      enum: ["pending_hod", "pending_principal", "approved_hod", "rejected_hod", "approved", "rejected"],
+      default: "pending_hod",
     },
-    adminResponse: {
-      type: String,
-      default: null,
-      trim: true,
+
+    // ── Stage-specific approval records ────────────────────────────────────────
+    hodApproval: { type: approvalSchema, default: () => ({}) },
+    principalApproval: { type: approvalSchema, default: () => ({}) },
+
+    // Kept for backward compat (admin notes / old single-level flow)
+    adminResponse: { type: String, default: null, trim: true },
+
+    // ── Optional supporting document ────────────────────────────────────────────
+    // Stored in MongoDB GridFS — never on the local filesystem.
+    // Accessed via GET /api/files/leave/:leaveId (requires auth + role check).
+    supportingDocument: {
+      originalName: { type: String, default: null },
+      fileId:       { type: String, default: null }, // GridFS ObjectId as hex string
+      mimeType:     { type: String, default: null },
+      size:         { type: Number, default: null },  // bytes
     },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
-// Prevent user from creating duplicate leave requests for the same date
+// Prevent duplicate leave requests for the same user + date
 leaveRequestSchema.index({ userId: 1, date: 1 }, { unique: true });
+// Speed up HOD dept-filtered queries
+leaveRequestSchema.index({ department: 1, status: 1 });
 
 module.exports = mongoose.model("LeaveRequest", leaveRequestSchema);

@@ -23,7 +23,7 @@ function UserAvatar({ source, size = "md" }) {
 
   const rawPath =
     source?.profileImageUrl || source?.profileImage || source?.userProfileImage;
-  const src = rawPath?.startsWith("/") ? rawPath : rawPath ? `/${rawPath}` : null;
+  const src = rawPath || null;
   const [broken, setBroken] = useState(false);
 
   if (src && !broken) {
